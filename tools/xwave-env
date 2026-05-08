@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${VERDI_HOME:-}" ]]; then
+  echo "ERROR: VERDI_HOME environment variable is not set" >&2
+  exit 1
+fi
+
+npi_lib="$VERDI_HOME/share/NPI/lib/LINUX64"
+if [[ ! -d "$npi_lib" ]]; then
+  npi_lib="$VERDI_HOME/share/NPI/lib/linux64"
+fi
+
+if [[ ! -d "$npi_lib" ]]; then
+  echo "ERROR: cannot find Verdi NPI library directory under VERDI_HOME=$VERDI_HOME" >&2
+  exit 1
+fi
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+xwave_root="$(cd "$script_dir/.." && pwd)"
+
+export LD_LIBRARY_PATH="$npi_lib:${LD_LIBRARY_PATH:-}"
+exec "$xwave_root/xwave" "$@"

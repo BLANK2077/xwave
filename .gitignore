@@ -1,0 +1,36 @@
+# Build artifacts
+xwave
+*.o
+
+# Logs
+*.log
+xwaveLog/
+fsdbreportLog/
+
+# Backup
+bak.md
+
+# Worktrees
+.worktrees/
+
+# Testbench generated files
+testbench/simv
+testbench/simv.daidir/
+testbench/csrc/
+testbench/*.log
+testbench/*.fsdb
+testbench/ucli.key
+testbench/verdi_config_file
+testbench/novas_dump.log
+
+# xif_agent event harness generated outputs
+testdata/xif_agent_event/out/
+testdata/xif_agent_event/*.fsdb
+testdata/xif_agent_event/*.log
+testdata/xif_agent_event/ucli.key
+testdata/xif_agent_event/vc_hdrs.h
+testdata/xif_agent_event/novas_dump.log
+testdata/xif_agent_event/xwaveLog/
+testdata/xif_agent_event/simv
+testdata/xif_agent_event/simv.daidir/
+testdata/xif_agent_event/csrc/

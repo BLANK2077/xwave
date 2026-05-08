@@ -1,0 +1,403 @@
+#include "event_analyzer.h"
+#include "../server/fsdb_value_reader.h"
+
+#include "npi_L1.h"
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <cstdlib>
+#include <set>
+#include <sstream>
+
+namespace xwave {
+
+static std::string strip_value_prefix(const std::string& value) {
+    if (value.size() >= 2 && value[0] == '\'' &&
+        (value[1] == 'b' || value[1] == 'B' || value[1] == 'h' || value[1] == 'H' ||
+         value[1] == 'd' || value[1] == 'D')) {
+        return value.substr(2);
+    }
+    return value;
+}
+
+static std::string bits_only(const std::string& value) {
+    std::string raw = strip_value_prefix(value);
+    std::string out;
+    for (char c : raw) {
+        if (c == '0' || c == '1' || c == 'x' || c == 'X' || c == 'z' || c == 'Z') {
+            out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+    }
+    return out;
+}
+
+static bool is_true_value(const std::string& value) {
+    std::string bits = bits_only(value);
+    if (bits.empty()) {
+        std::string raw = strip_value_prefix(value);
+        return raw == "1";
+    }
+    for (char c : bits) {
+        if (c == 'x' || c == 'z') return false;
+        if (c == '1') return true;
+    }
+    return false;
+}
+
+static std::string hex_to_bits(const std::string& hex) {
+    std::string out;
+    for (char c : hex) {
+        if (c == '_' || c == ' ') continue;
+        int v = -1;
+        if (c >= '0' && c <= '9') v = c - '0';
+        else if (c >= 'a' && c <= 'f') v = 10 + c - 'a';
+        else if (c >= 'A' && c <= 'F') v = 10 + c - 'A';
+        if (v < 0) return "";
+        for (int bit = 3; bit >= 0; --bit) out.push_back((v & (1 << bit)) ? '1' : '0');
+    }
+    size_t first_one = out.find('1');
+    if (first_one == std::string::npos) return "0";
+    return out.substr(first_one);
+}
+
+static std::string dec_to_bits(const std::string& dec) {
+    char* end = nullptr;
+    unsigned long long v = strtoull(dec.c_str(), &end, 10);
+    if (!end || *end != '\0') return "";
+    if (v == 0) return "0";
+    std::string out;
+    while (v) {
+        out.push_back((v & 1ULL) ? '1' : '0');
+        v >>= 1;
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
+static std::string literal_to_bits(const std::string& literal) {
+    std::string s = literal;
+    size_t tick = s.find('\'');
+    if (tick != std::string::npos && tick + 1 < s.size()) {
+        char base = static_cast<char>(std::tolower(static_cast<unsigned char>(s[tick + 1])));
+        std::string body = s.substr(tick + 2);
+        if (base == 'b') return bits_only(body);
+        if (base == 'h') return hex_to_bits(body);
+        if (base == 'd') return dec_to_bits(body);
+    }
+    if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) return hex_to_bits(s.substr(2));
+    if (s.size() > 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B')) return bits_only(s.substr(2));
+    return dec_to_bits(s);
+}
+
+static std::string normalize_for_compare(const std::string& value, size_t min_width) {
+    std::string bits;
+    if (value.size() > 2 && value[0] == '0' && (value[1] == 'x' || value[1] == 'X' || value[1] == 'b' || value[1] == 'B')) {
+        bits = literal_to_bits(value);
+    } else if (value.find('\'') != std::string::npos) {
+        bits = literal_to_bits(value);
+        if (bits.empty()) bits = bits_only(value);
+    } else {
+        bits = bits_only(value);
+        if (bits.empty()) bits = literal_to_bits(value);
+    }
+    if (bits.empty()) return value;
+    size_t first = bits.find_first_not_of('0');
+    if (first == std::string::npos) bits = "0";
+    else bits = bits.substr(first);
+    while (bits.size() < min_width) bits.insert(bits.begin(), '0');
+    return bits;
+}
+
+static std::string extract_slice_value(const std::string& value, int left, int right) {
+    std::string bits = bits_only(value);
+    if (bits.empty()) return "";
+    int hi = std::max(left, right);
+    int lo = std::min(left, right);
+    if (hi < 0 || lo < 0 || static_cast<size_t>(hi) >= bits.size()) return "";
+    size_t start = bits.size() - 1 - static_cast<size_t>(hi);
+    size_t end = bits.size() - 1 - static_cast<size_t>(lo);
+    if (start > end || end >= bits.size()) return "";
+    return "'b" + bits.substr(start, end - start + 1);
+}
+
+class ExprParser {
+public:
+    ExprParser(const std::string& expr, const std::map<std::string, std::string>& values)
+        : expr_(expr), values_(values) {}
+
+    bool eval(bool& result, std::string& error) {
+        pos_ = 0;
+        error.clear();
+        result = parse_or(error);
+        skip_ws();
+        if (error.empty() && pos_ != expr_.size()) {
+            error = "Unexpected token near: " + expr_.substr(pos_);
+        }
+        return error.empty();
+    }
+
+private:
+    bool parse_or(std::string& error) {
+        bool lhs = parse_and(error);
+        while (error.empty()) {
+            skip_ws();
+            if (!consume("||")) break;
+            bool rhs = parse_and(error);
+            lhs = lhs || rhs;
+        }
+        return lhs;
+    }
+
+    bool parse_and(std::string& error) {
+        bool lhs = parse_unary(error);
+        while (error.empty()) {
+            skip_ws();
+            if (!consume("&&")) break;
+            bool rhs = parse_unary(error);
+            lhs = lhs && rhs;
+        }
+        return lhs;
+    }
+
+    bool parse_unary(std::string& error) {
+        skip_ws();
+        if (consume("!")) return !parse_unary(error);
+        return parse_primary(error);
+    }
+
+    bool parse_primary(std::string& error) {
+        skip_ws();
+        if (consume("(")) {
+            bool v = parse_or(error);
+            if (error.empty() && !consume(")")) error = "Missing ')'";
+            return v;
+        }
+
+        std::string lhs = parse_atom(error);
+        if (!error.empty()) return false;
+        skip_ws();
+        if (consume("==") || consume("=")) {
+            std::string rhs = parse_atom(error);
+            if (!error.empty()) return false;
+            return compare(lhs, rhs);
+        }
+        if (consume("!=")) {
+            std::string rhs = parse_atom(error);
+            if (!error.empty()) return false;
+            return !compare(lhs, rhs);
+        }
+        return is_true_value(lhs);
+    }
+
+    bool compare(const std::string& lhs, const std::string& rhs) {
+        size_t width = std::max(bits_only(lhs).size(), bits_only(rhs).size());
+        return normalize_for_compare(lhs, width) == normalize_for_compare(rhs, width);
+    }
+
+    std::string parse_atom(std::string& error) {
+        skip_ws();
+        if (pos_ >= expr_.size()) {
+            error = "Unexpected end of expression";
+            return "";
+        }
+        if (expr_[pos_] == '\'' || std::isdigit(static_cast<unsigned char>(expr_[pos_]))) {
+            return parse_literal();
+        }
+        if (is_ident_start(expr_[pos_])) {
+            std::string name = parse_identifier();
+            auto it = values_.find(name);
+            if (it == values_.end()) {
+                error = "Unknown alias in expression: " + name;
+                return "";
+            }
+            return it->second;
+        }
+        error = "Unexpected token near: " + expr_.substr(pos_);
+        return "";
+    }
+
+    std::string parse_literal() {
+        size_t start = pos_;
+        if (expr_[pos_] == '\'') {
+            pos_++;
+            if (pos_ < expr_.size()) pos_++;
+            while (pos_ < expr_.size() && is_literal_char(expr_[pos_])) pos_++;
+            return expr_.substr(start, pos_ - start);
+        }
+        while (pos_ < expr_.size() && is_literal_char(expr_[pos_])) pos_++;
+        return expr_.substr(start, pos_ - start);
+    }
+
+    std::string parse_identifier() {
+        size_t start = pos_;
+        pos_++;
+        while (pos_ < expr_.size() && is_ident_char(expr_[pos_])) pos_++;
+        return expr_.substr(start, pos_ - start);
+    }
+
+    bool consume(const char* token) {
+        skip_ws();
+        size_t n = strlen(token);
+        if (expr_.compare(pos_, n, token) == 0) {
+            pos_ += n;
+            return true;
+        }
+        return false;
+    }
+
+    void skip_ws() {
+        while (pos_ < expr_.size() && std::isspace(static_cast<unsigned char>(expr_[pos_]))) pos_++;
+    }
+
+    static bool is_ident_start(char c) {
+        return std::isalpha(static_cast<unsigned char>(c)) || c == '_';
+    }
+
+    static bool is_ident_char(char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.';
+    }
+
+    static bool is_literal_char(char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '\'' || c == 'x' || c == 'X';
+    }
+
+    std::string expr_;
+    const std::map<std::string, std::string>& values_;
+    size_t pos_ = 0;
+};
+
+bool EventAnalyzer::validate_config(npiFsdbFileHandle file,
+                                    const EventConfig& config,
+                                    std::vector<std::string>& ordered_aliases,
+                                    std::vector<std::string>& ordered_paths,
+                                    std::string& error) {
+    ordered_aliases.clear();
+    ordered_paths.clear();
+    if (config.clk.empty()) {
+        error = "Event config requires clk";
+        return false;
+    }
+    if (config.signals.empty()) {
+        error = "Event config requires at least one signal alias";
+        return false;
+    }
+    if (!npi_fsdb_sig_by_name(file, config.clk.c_str(), NULL)) {
+        error = "Clock signal not found: " + config.clk;
+        return false;
+    }
+    if (!config.rst_n.empty() && !npi_fsdb_sig_by_name(file, config.rst_n.c_str(), NULL)) {
+        error = "Reset signal not found: " + config.rst_n;
+        return false;
+    }
+    for (const auto& kv : config.signals) {
+        if (!npi_fsdb_sig_by_name(file, kv.second.c_str(), NULL)) {
+            error = "Signal not found for alias " + kv.first + ": " + kv.second;
+            return false;
+        }
+        ordered_aliases.push_back(kv.first);
+        ordered_paths.push_back(kv.second);
+    }
+    for (const auto& kv : config.fields) {
+        if (config.signals.find(kv.second.signal_alias) == config.signals.end()) {
+            error = "Field " + kv.first + " references unknown signal alias: " + kv.second.signal_alias;
+            return false;
+        }
+        if (kv.second.left < 0 || kv.second.right < 0) {
+            error = "Field " + kv.first + " has negative bit index";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool EventAnalyzer::analyze(npiFsdbFileHandle file,
+                            const EventConfig& config,
+                            const EventQuery& query,
+                            std::vector<EventRecord>& records,
+                            std::string& error) {
+    records.clear();
+    std::vector<std::string> aliases;
+    std::vector<std::string> paths;
+    if (!validate_config(file, config, aliases, paths, error)) return false;
+
+    npiFsdbSigHandle clk = npi_fsdb_sig_by_name(file, config.clk.c_str(), NULL);
+    npiFsdbVctHandle clk_vct = npi_fsdb_create_vct(clk);
+    if (!clk_vct) {
+        error = "Failed to create clock VCT";
+        return false;
+    }
+
+    npiFsdbL1Edge_e edge = config.posedge ? npiFsdbL1PositiveEdge : npiFsdbL1NegativeEdge;
+    int edge_ok = npi_fsdb_goto_time_edge(clk_vct, query.begin, edge);
+    if (!edge_ok) edge_ok = npi_fsdb_goto_first_edge(clk_vct, edge);
+
+    while (edge_ok) {
+        npiFsdbTime t = 0;
+        if (!npi_fsdb_vct_time(clk_vct, &t)) break;
+        if (t < query.begin) {
+            edge_ok = npi_fsdb_goto_next_edge(clk_vct, edge);
+            continue;
+        }
+        if (t > query.end) break;
+
+        if (!config.rst_n.empty()) {
+            std::string rst;
+            if (!read_sig_value_at(file, config.rst_n.c_str(), t, 'B', rst)) {
+                error = "Failed to read reset value: " + config.rst_n;
+                npi_fsdb_release_vct(clk_vct);
+                return false;
+            }
+            if (!is_true_value(rst)) {
+                edge_ok = npi_fsdb_goto_next_edge(clk_vct, edge);
+                continue;
+            }
+        }
+
+        std::vector<std::string> values;
+        if (!read_sig_vec_value_at(file, paths, t, 'B', values) || values.size() != aliases.size()) {
+            error = "Failed to read event signal values";
+            npi_fsdb_release_vct(clk_vct);
+            return false;
+        }
+
+        std::map<std::string, std::string> value_map;
+        for (size_t i = 0; i < aliases.size(); ++i) value_map[aliases[i]] = "'b" + values[i];
+
+        std::map<std::string, std::string> field_map;
+        for (const auto& kv : config.fields) {
+            auto sig_it = value_map.find(kv.second.signal_alias);
+            if (sig_it == value_map.end()) continue;
+            std::string sliced = extract_slice_value(sig_it->second, kv.second.left, kv.second.right);
+            if (sliced.empty()) {
+                error = "Failed to slice field " + kv.first;
+                npi_fsdb_release_vct(clk_vct);
+                return false;
+            }
+            field_map[kv.first] = sliced;
+            value_map[kv.first] = sliced;
+        }
+
+        bool matched = false;
+        ExprParser parser(query.expr, value_map);
+        if (!parser.eval(matched, error)) {
+            npi_fsdb_release_vct(clk_vct);
+            return false;
+        }
+        if (matched) {
+            EventRecord rec;
+            rec.time = t;
+            rec.signals = value_map;
+            for (const auto& kv : config.fields) rec.signals.erase(kv.first);
+            rec.fields = field_map;
+            records.push_back(rec);
+            if (query.limit > 0 && static_cast<int>(records.size()) >= query.limit) break;
+        }
+
+        edge_ok = npi_fsdb_goto_next_edge(clk_vct, edge);
+    }
+
+    npi_fsdb_release_vct(clk_vct);
+    return true;
+}
+
+} // namespace xwave
