@@ -10,18 +10,44 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
+#include <climits>
 #include <fstream>
 #include <sstream>
 #include <vector>
 
 namespace xwave {
 
-static int resolve_session_id(int sid) {
-    if (sid >= 0) return sid;
+static bool resolve_session_info(int sid, SessionInfo& info) {
     SessionManager manager;
-    SessionInfo info;
-    if (!manager.get_latest_session(info)) return -1;
-    return info.session_id;
+    if (sid >= 0) return manager.get_session(sid, info);
+    return manager.get_latest_session(info);
+}
+
+static bool parse_nonnegative_int(const std::string& text, int& value) {
+    if (text.empty()) return false;
+    char* end = nullptr;
+    errno = 0;
+    long parsed = strtol(text.c_str(), &end, 10);
+    if (errno != 0 || !end || *end != '\0' || parsed < 0 || parsed > INT_MAX) return false;
+    value = static_cast<int>(parsed);
+    return true;
+}
+
+static bool read_json_int(const nlohmann::json& j, const char* key, int& value) {
+    auto it = j.find(key);
+    if (it == j.end() || !it->is_number_integer()) return false;
+    long long parsed = it->get<long long>();
+    if (parsed < 0 || parsed > INT_MAX) return false;
+    value = static_cast<int>(parsed);
+    return true;
+}
+
+static bool read_json_string(const nlohmann::json& j, const char* key, std::string& value) {
+    auto it = j.find(key);
+    if (it == j.end() || !it->is_string()) return false;
+    value = it->get<std::string>();
+    return true;
 }
 
 static bool read_file_to_string(const char* path, std::string& out) {
@@ -37,11 +63,12 @@ static bool parse_field_ref(const std::string& text, EventField& field) {
     size_t lb = text.find('[');
     size_t colon = text.find(':', lb == std::string::npos ? 0 : lb);
     size_t rb = text.find(']', colon == std::string::npos ? 0 : colon);
-    if (lb == std::string::npos || colon == std::string::npos || rb == std::string::npos) return false;
+    if (lb == std::string::npos || colon == std::string::npos ||
+        rb == std::string::npos || rb != text.size() - 1) return false;
     field.signal_alias = text.substr(0, lb);
-    field.left = atoi(text.substr(lb + 1, colon - lb - 1).c_str());
-    field.right = atoi(text.substr(colon + 1, rb - colon - 1).c_str());
-    return !field.signal_alias.empty();
+    return !field.signal_alias.empty() &&
+           parse_nonnegative_int(text.substr(lb + 1, colon - lb - 1), field.left) &&
+           parse_nonnegative_int(text.substr(colon + 1, rb - colon - 1), field.right);
 }
 
 static bool load_json_config(const char* json_path, EventConfig& config) {
@@ -70,13 +97,25 @@ static bool load_json_config(const char* json_path, EventConfig& config) {
     config.clk = get("clk");
     config.rst_n = get("rst_n");
     std::string edge = get("edge");
-    config.posedge = (edge.empty() || edge == "posedge");
+    if (edge.empty() || edge == "posedge") {
+        config.posedge = true;
+    } else if (edge == "negedge") {
+        config.posedge = false;
+    } else {
+        fprintf(stderr, "Error: Invalid edge '%s' in %s; expected posedge or negedge\n",
+                edge.c_str(), json_path);
+        return false;
+    }
     config.signals.clear();
     config.fields.clear();
 
     if (j.contains("signals") && j["signals"].is_object()) {
         for (auto it = j["signals"].begin(); it != j["signals"].end(); ++it) {
-            if (it.value().is_string()) config.signals[it.key()] = it.value().get<std::string>();
+            if (!it.value().is_string()) {
+                fprintf(stderr, "Error: Signal %s must be a string path\n", it.key().c_str());
+                return false;
+            }
+            config.signals[it.key()] = it.value().get<std::string>();
         }
     }
     if (j.contains("fields") && j["fields"].is_object()) {
@@ -88,15 +127,23 @@ static bool load_json_config(const char* json_path, EventConfig& config) {
                     return false;
                 }
             } else if (it.value().is_object()) {
-                field.signal_alias = it.value().value("signal", "");
-                field.left = it.value().value("left", 0);
-                field.right = it.value().value("right", 0);
+                if (!read_json_string(it.value(), "signal", field.signal_alias) ||
+                    !read_json_int(it.value(), "left", field.left) ||
+                    !read_json_int(it.value(), "right", field.right)) {
+                    fprintf(stderr, "Error: Invalid field definition for %s\n", it.key().c_str());
+                    return false;
+                }
             } else {
                 fprintf(stderr, "Error: Invalid field definition for %s\n", it.key().c_str());
                 return false;
             }
             if (field.signal_alias.empty()) {
                 fprintf(stderr, "Error: Field %s requires a signal alias\n", it.key().c_str());
+                return false;
+            }
+            if (config.signals.find(field.signal_alias) == config.signals.end()) {
+                fprintf(stderr, "Error: Field %s references unknown signal alias: %s\n",
+                        it.key().c_str(), field.signal_alias.c_str());
                 return false;
             }
             config.fields[it.key()] = field;
@@ -123,13 +170,18 @@ static void print_event_config(const EventConfig& config) {
     printf("%s\n", j.dump(2).c_str());
 }
 
-static bool resolve_event_name(EventManager& em, int session_id, const char* explicit_name, std::string& out_name) {
+static bool resolve_event_name(EventManager& em,
+                               int session_id,
+                               const std::string& fsdb_file,
+                               const char* explicit_name,
+                               std::string& out_name) {
     if (explicit_name) {
         out_name = explicit_name;
         return true;
     }
-    if (!em.get_latest_event(session_id, out_name)) {
-        fprintf(stderr, "Error: No event configs found for session %d\n", session_id);
+    if (!em.get_latest_event(session_id, fsdb_file, out_name)) {
+        fprintf(stderr, "Error: No event configs found for session %d and FSDB %s\n",
+                session_id, fsdb_file.c_str());
         return false;
     }
     return true;
@@ -162,16 +214,17 @@ int cmd_event(int argc, char** argv) {
             fprintf(stderr, "Error: -n <name> is required for loading event config\n");
             return 1;
         }
-        session_id = resolve_session_id(session_id);
-        if (session_id < 0) {
+        SessionInfo session;
+        if (!resolve_session_info(session_id, session)) {
             fprintf(stderr, "Error: No active sessions\n");
             return 1;
         }
+        session_id = session.session_id;
         EventConfig config;
         if (!load_json_config(subcmd_or_file, config)) return 1;
         config.name = name;
         EventManager em;
-        if (!em.create_event(session_id, config)) {
+        if (!em.create_event(session_id, session.fsdb_file, config)) {
             fprintf(stderr, "Error: Failed to create event config '%s'\n", name);
             return 1;
         }
@@ -186,21 +239,22 @@ int cmd_event(int argc, char** argv) {
             if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
             else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) name = argv[++i];
         }
-        session_id = resolve_session_id(session_id);
-        if (session_id < 0) {
+        SessionInfo session;
+        if (!resolve_session_info(session_id, session)) {
             fprintf(stderr, "Error: No active sessions\n");
             return 1;
         }
+        session_id = session.session_id;
         EventManager em;
         if (name) {
             EventConfig config;
-            if (!em.get_event(session_id, name, config)) {
+            if (!em.get_event(session_id, session.fsdb_file, name, config)) {
                 fprintf(stderr, "Error: Event config '%s' not found\n", name);
                 return 1;
             }
             print_event_config(config);
         } else {
-            std::vector<std::string> names = em.list_events(session_id);
+            std::vector<std::string> names = em.list_events(session_id, session.fsdb_file);
             for (const auto& n : names) printf("%s\n", n.c_str());
         }
         return 0;
@@ -229,14 +283,15 @@ int cmd_event(int argc, char** argv) {
         fprintf(stderr, "Error: -expr <expr> is required\n");
         return 1;
     }
-    session_id = resolve_session_id(session_id);
-    if (session_id < 0) {
+    SessionInfo session;
+    if (!resolve_session_info(session_id, session)) {
         fprintf(stderr, "Error: No active sessions\n");
         return 1;
     }
+    session_id = session.session_id;
     EventManager em;
     std::string event_name;
-    if (!resolve_event_name(em, session_id, name, event_name)) return 1;
+    if (!resolve_event_name(em, session_id, session.fsdb_file, name, event_name)) return 1;
 
     npiFsdbTime begin = begin_str ? parse_time_string(begin_str) : 0;
     npiFsdbTime end = end_str ? parse_time_string(end_str) : 0xFFFFFFFFFFFFFFFFULL;

@@ -1,4 +1,5 @@
 #include "session_manager.h"
+#include "../event/event_manager.h"
 #include "../protocol/protocol.h"
 
 #include <cstdio>
@@ -12,6 +13,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <set>
 
 namespace xwave {
 
@@ -231,6 +233,7 @@ bool SessionManager::kill_session(int session_id) {
     if (!registry_->get(session_id, session)) {
         return false;
     }
+    EventManager event_manager;
 
     SessionHealth health = diagnose_session(session_id);
     if (!health.healthy) {
@@ -238,6 +241,7 @@ bool SessionManager::kill_session(int session_id) {
             kill(session.server_pid, SIGTERM);
         }
         registry_->remove(session_id);
+        event_manager.delete_session_events(session_id);
         unlink(session.socket_path.c_str());
         return true;
     }
@@ -255,6 +259,7 @@ bool SessionManager::kill_session(int session_id) {
         close(fd);
         // Server might be dead, clean up anyway
         registry_->remove(session_id);
+        event_manager.delete_session_events(session_id);
         unlink(session.socket_path.c_str());
         return false;
     }
@@ -288,6 +293,7 @@ bool SessionManager::kill_session(int session_id) {
 
     // Remove from registry
     registry_->remove(session_id);
+    event_manager.delete_session_events(session_id);
 
     // Remove socket file
     unlink(session.socket_path.c_str());
@@ -297,10 +303,14 @@ bool SessionManager::kill_session(int session_id) {
 
 bool SessionManager::kill_all_sessions() {
     std::vector<SessionInfo> sessions = list_sessions();
+    EventManager event_manager;
     for (const auto& session : sessions) {
         kill_session(session.session_id);
     }
     registry_->clear_all();
+    for (const auto& session : sessions) {
+        event_manager.delete_session_events(session.session_id);
+    }
     return true;
 }
 
@@ -375,7 +385,19 @@ std::string SessionManager::get_socket_path(int session_id) {
 }
 
 void SessionManager::cleanup() {
+    std::vector<SessionInfo> before;
+    registry_->load_all(before);
     registry_->cleanup_stale();
+    std::vector<SessionInfo> after;
+    registry_->load_all(after);
+    std::set<int> live_ids;
+    for (const auto& session : after) live_ids.insert(session.session_id);
+    EventManager event_manager;
+    for (const auto& session : before) {
+        if (live_ids.find(session.session_id) == live_ids.end()) {
+            event_manager.delete_session_events(session.session_id);
+        }
+    }
 }
 
 } // namespace xtrace

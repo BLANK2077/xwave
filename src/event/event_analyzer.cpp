@@ -44,6 +44,52 @@ static bool is_true_value(const std::string& value) {
     return false;
 }
 
+enum class TriValue {
+    False,
+    True,
+    Unknown
+};
+
+static TriValue tri_not(TriValue value) {
+    if (value == TriValue::True) return TriValue::False;
+    if (value == TriValue::False) return TriValue::True;
+    return TriValue::Unknown;
+}
+
+static TriValue tri_and(TriValue lhs, TriValue rhs) {
+    if (lhs == TriValue::False || rhs == TriValue::False) return TriValue::False;
+    if (lhs == TriValue::True && rhs == TriValue::True) return TriValue::True;
+    return TriValue::Unknown;
+}
+
+static TriValue tri_or(TriValue lhs, TriValue rhs) {
+    if (lhs == TriValue::True || rhs == TriValue::True) return TriValue::True;
+    if (lhs == TriValue::False && rhs == TriValue::False) return TriValue::False;
+    return TriValue::Unknown;
+}
+
+static bool has_unknown_bit(const std::string& value) {
+    for (char c : value) {
+        if (c == 'x' || c == 'X' || c == 'z' || c == 'Z') return true;
+    }
+    return false;
+}
+
+static TriValue truth_value(const std::string& value) {
+    std::string bits = bits_only(value);
+    if (bits.empty()) {
+        std::string raw = strip_value_prefix(value);
+        if (raw == "1") return TriValue::True;
+        if (raw == "0") return TriValue::False;
+        return TriValue::Unknown;
+    }
+    if (has_unknown_bit(bits)) return TriValue::Unknown;
+    for (char c : bits) {
+        if (c == '1') return TriValue::True;
+    }
+    return TriValue::False;
+}
+
 static std::string hex_to_bits(const std::string& hex) {
     std::string out;
     for (char c : hex) {
@@ -61,8 +107,12 @@ static std::string hex_to_bits(const std::string& hex) {
 }
 
 static std::string dec_to_bits(const std::string& dec) {
+    std::string clean;
+    for (char c : dec) {
+        if (c != '_') clean.push_back(c);
+    }
     char* end = nullptr;
-    unsigned long long v = strtoull(dec.c_str(), &end, 10);
+    unsigned long long v = strtoull(clean.c_str(), &end, 10);
     if (!end || *end != '\0') return "";
     if (v == 0) return "0";
     std::string out;
@@ -89,6 +139,16 @@ static std::string literal_to_bits(const std::string& literal) {
     return dec_to_bits(s);
 }
 
+static bool is_decimal_literal_text(const std::string& value) {
+    bool saw_digit = false;
+    for (char c : value) {
+        if (c == '_') continue;
+        if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+        saw_digit = true;
+    }
+    return saw_digit;
+}
+
 static std::string normalize_for_compare(const std::string& value, size_t min_width) {
     std::string bits;
     if (value.size() > 2 && value[0] == '0' && (value[1] == 'x' || value[1] == 'X' || value[1] == 'b' || value[1] == 'B')) {
@@ -96,6 +156,8 @@ static std::string normalize_for_compare(const std::string& value, size_t min_wi
     } else if (value.find('\'') != std::string::npos) {
         bits = literal_to_bits(value);
         if (bits.empty()) bits = bits_only(value);
+    } else if (is_decimal_literal_text(value)) {
+        bits = literal_to_bits(value);
     } else {
         bits = bits_only(value);
         if (bits.empty()) bits = literal_to_bits(value);
@@ -125,7 +187,7 @@ public:
     ExprParser(const std::string& expr, const std::map<std::string, std::string>& values)
         : expr_(expr), values_(values) {}
 
-    bool eval(bool& result, std::string& error) {
+    bool eval(TriValue& result, std::string& error) {
         pos_ = 0;
         error.clear();
         result = parse_or(error);
@@ -137,61 +199,66 @@ public:
     }
 
 private:
-    bool parse_or(std::string& error) {
-        bool lhs = parse_and(error);
+    TriValue parse_or(std::string& error) {
+        TriValue lhs = parse_and(error);
         while (error.empty()) {
             skip_ws();
             if (!consume("||")) break;
-            bool rhs = parse_and(error);
-            lhs = lhs || rhs;
+            TriValue rhs = parse_and(error);
+            lhs = tri_or(lhs, rhs);
         }
         return lhs;
     }
 
-    bool parse_and(std::string& error) {
-        bool lhs = parse_unary(error);
+    TriValue parse_and(std::string& error) {
+        TriValue lhs = parse_unary(error);
         while (error.empty()) {
             skip_ws();
             if (!consume("&&")) break;
-            bool rhs = parse_unary(error);
-            lhs = lhs && rhs;
+            TriValue rhs = parse_unary(error);
+            lhs = tri_and(lhs, rhs);
         }
         return lhs;
     }
 
-    bool parse_unary(std::string& error) {
+    TriValue parse_unary(std::string& error) {
         skip_ws();
-        if (consume("!")) return !parse_unary(error);
+        if (consume("!")) return tri_not(parse_unary(error));
         return parse_primary(error);
     }
 
-    bool parse_primary(std::string& error) {
+    TriValue parse_primary(std::string& error) {
         skip_ws();
         if (consume("(")) {
-            bool v = parse_or(error);
+            TriValue v = parse_or(error);
             if (error.empty() && !consume(")")) error = "Missing ')'";
             return v;
         }
 
         std::string lhs = parse_atom(error);
-        if (!error.empty()) return false;
+        if (!error.empty()) return TriValue::False;
         skip_ws();
         if (consume("==") || consume("=")) {
             std::string rhs = parse_atom(error);
-            if (!error.empty()) return false;
+            if (!error.empty()) return TriValue::False;
             return compare(lhs, rhs);
         }
         if (consume("!=")) {
             std::string rhs = parse_atom(error);
-            if (!error.empty()) return false;
-            return !compare(lhs, rhs);
+            if (!error.empty()) return TriValue::False;
+            TriValue eq = compare(lhs, rhs);
+            if (eq == TriValue::Unknown) return TriValue::Unknown;
+            return eq == TriValue::True ? TriValue::False : TriValue::True;
         }
-        return is_true_value(lhs);
+        return truth_value(lhs);
     }
 
-    bool compare(const std::string& lhs, const std::string& rhs) {
+    TriValue compare(const std::string& lhs, const std::string& rhs) {
         size_t width = std::max(bits_only(lhs).size(), bits_only(rhs).size());
-        return normalize_for_compare(lhs, width) == normalize_for_compare(rhs, width);
+        std::string lhs_norm = normalize_for_compare(lhs, width);
+        std::string rhs_norm = normalize_for_compare(rhs, width);
+        if (has_unknown_bit(lhs_norm) || has_unknown_bit(rhs_norm)) return TriValue::Unknown;
+        return lhs_norm == rhs_norm ? TriValue::True : TriValue::False;
     }
 
     std::string parse_atom(std::string& error) {
@@ -320,6 +387,13 @@ bool EventAnalyzer::analyze(npiFsdbFileHandle file,
     std::vector<std::string> paths;
     if (!validate_config(file, config, aliases, paths, error)) return false;
 
+    std::map<std::string, std::string> dummy_values;
+    for (const auto& alias : aliases) dummy_values[alias] = "'b0";
+    for (const auto& kv : config.fields) dummy_values[kv.first] = "'b0";
+    TriValue ignored = TriValue::False;
+    ExprParser validator(query.expr, dummy_values);
+    if (!validator.eval(ignored, error)) return false;
+
     npiFsdbSigHandle clk = npi_fsdb_sig_by_name(file, config.clk.c_str(), NULL);
     npiFsdbVctHandle clk_vct = npi_fsdb_create_vct(clk);
     if (!clk_vct) {
@@ -377,13 +451,13 @@ bool EventAnalyzer::analyze(npiFsdbFileHandle file,
             value_map[kv.first] = sliced;
         }
 
-        bool matched = false;
+        TriValue matched = TriValue::False;
         ExprParser parser(query.expr, value_map);
         if (!parser.eval(matched, error)) {
             npi_fsdb_release_vct(clk_vct);
             return false;
         }
-        if (matched) {
+        if (matched == TriValue::True) {
             EventRecord rec;
             rec.time = t;
             rec.signals = value_map;

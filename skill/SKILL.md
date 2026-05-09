@@ -156,7 +156,7 @@ xwave axi latency|osd [-rd|-wr|-all] [-id <id>] [-json] [-n <名>] [-s <sid>]
 
 ### event — 通用事件
 
-适用于 valid/ready/backpressure 风格接口，在时钟边沿采样并对表达式求值。
+适用于 valid/ready/backpressure 风格接口，在时钟边沿采样并对表达式求值。event 配置绑定到当前 Session 打开的 FSDB；如果重新打开了不同波形，需要重新加载 event JSON。
 
 **配置文件格式 (JSON)：**
 
@@ -178,9 +178,9 @@ xwave axi latency|osd [-rd|-wr|-all] [-id <id>] [-json] [-n <名>] [-s <sid>]
 }
 ```
 
-- `clk` 和 `signals` 必需；`rst_n` 可选（不配则无复位门控）；`edge` 可选（默认 `posedge`）
+- `clk` 和 `signals` 必需；`rst_n` 可选（不配则无复位门控）；`edge` 可选（默认 `posedge`，只能取 `posedge`/`negedge`）
 - `signals`：键 = 别名，值 = FSDB 完整路径
-- `fields`：可选，定义位段别名。格式 `"<signal_alias>[<high>:<low>]"`，也支持 `{"signal": "...", "left": N, "right": M}` 对象格式
+- `fields`：可选，定义位段别名。格式 `"<signal_alias>[<high>:<low>]"`，也支持 `{"signal": "...", "left": N, "right": M}` 对象格式；位段必须是非负整数，且 signal alias 必须已在 `signals` 中定义
 
 **表达式语法：**
 
@@ -210,6 +210,8 @@ xwave event export -n <名> -expr <表达式> [-b <T>] [-e <T>] [-limit N] [-jso
 
 - `find` 返回第一个匹配事件
 - `export` 导出所有匹配事件，用 `-limit` 限制数量
+- 表达式会先做语法和 alias 校验；含 `x/z` 的比较结果为 unknown，不会作为匹配事件
+- 旧版 `.xwave.events` 缺少 FSDB 绑定信息时不会被复用，重新加载配置即可迁移
 
 ---
 

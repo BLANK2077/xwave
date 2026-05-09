@@ -38,6 +38,7 @@ static int g_session_id = 0;
 static int g_srv_fd = -1;
 static char g_sock_path[SOCK_PATH_LEN];
 static npiFsdbFileHandle g_fsdb_file = nullptr;
+static std::string g_fsdb_file_path;
 static xwave::ApbAnalyzer g_apb_analyzer;
 static xwave::AxiAnalyzer g_axi_analyzer;
 static xwave::EventAnalyzer g_event_analyzer;
@@ -687,7 +688,7 @@ static void handle_event_query(int client_fd,
                                const char* expr) {
     xwave::EventManager em;
     xwave::EventConfig config;
-    if (!em.get_event(g_session_id, name, config)) {
+    if (!em.get_event(g_session_id, g_fsdb_file_path, name, config)) {
         std::string err = std::string(ERROR_PREFIX) + "Event config not found: " + name + "\n" + END_MARKER;
         send_all(client_fd, err.c_str(), err.length());
         return;
@@ -1023,6 +1024,7 @@ int server_main(int argc, char** argv) {
 
     // Parse FSDB file
     const char* fsdb_file = argv[arg_idx];
+    g_fsdb_file_path = fsdb_file;
 
     // Redirect stdout to capture NPI init messages, but keep a copy
     int stdout_copy = dup(STDOUT_FILENO);

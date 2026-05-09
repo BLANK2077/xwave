@@ -25,9 +25,10 @@ static Json field_to_json(const EventField& field) {
     return j;
 }
 
-static Json config_to_json(int session_id, const EventConfig& config) {
+static Json config_to_json(int session_id, const std::string& fsdb_file, const EventConfig& config) {
     Json j;
     j["session_id"] = session_id;
+    j["fsdb_file"] = fsdb_file;
     j["name"] = config.name;
     j["clk"] = config.clk;
     j["rst_n"] = config.rst_n;
@@ -39,9 +40,10 @@ static Json config_to_json(int session_id, const EventConfig& config) {
     return j;
 }
 
-static bool json_to_config(const Json& j, int& session_id, EventConfig& config) {
+static bool json_to_config(const Json& j, int& session_id, std::string& fsdb_file, EventConfig& config) {
     if (!j.is_object()) return false;
     session_id = j.value("session_id", -1);
+    fsdb_file = j.value("fsdb_file", "");
     config.name = j.value("name", "");
     config.clk = j.value("clk", "");
     config.rst_n = j.value("rst_n", "");
@@ -64,7 +66,7 @@ static bool json_to_config(const Json& j, int& session_id, EventConfig& config) 
             config.fields[it.key()] = field;
         }
     }
-    return session_id > 0 && !config.name.empty() && !config.clk.empty();
+    return session_id > 0 && !fsdb_file.empty() && !config.name.empty() && !config.clk.empty();
 }
 
 bool EventManager::load_all(std::vector<std::string>& lines) {
@@ -101,7 +103,7 @@ bool EventManager::save_all(const std::vector<std::string>& lines) {
     return true;
 }
 
-bool EventManager::create_event(int session_id, const EventConfig& config) {
+bool EventManager::create_event(int session_id, const std::string& fsdb_file, const EventConfig& config) {
     std::vector<std::string> lines;
     if (!load_all(lines)) return false;
 
@@ -110,17 +112,18 @@ bool EventManager::create_event(int session_id, const EventConfig& config) {
         try {
             Json j = Json::parse(line);
             int sid = j.value("session_id", -1);
+            std::string stored_fsdb = j.value("fsdb_file", "");
             std::string name = j.value("name", "");
-            if (sid == session_id && name == config.name) continue;
+            if (sid == session_id && stored_fsdb == fsdb_file && name == config.name) continue;
         } catch (...) {
         }
         out.push_back(line);
     }
-    out.push_back(config_to_json(session_id, config).dump());
+    out.push_back(config_to_json(session_id, fsdb_file, config).dump());
     return save_all(out);
 }
 
-bool EventManager::delete_event(int session_id, const std::string& name) {
+bool EventManager::delete_event(int session_id, const std::string& fsdb_file, const std::string& name) {
     std::vector<std::string> lines;
     if (!load_all(lines)) return false;
     std::vector<std::string> out;
@@ -129,8 +132,9 @@ bool EventManager::delete_event(int session_id, const std::string& name) {
         try {
             Json j = Json::parse(line);
             int sid = j.value("session_id", -1);
+            std::string stored_fsdb = j.value("fsdb_file", "");
             std::string cfg_name = j.value("name", "");
-            if (sid == session_id && cfg_name == name) {
+            if (sid == session_id && stored_fsdb == fsdb_file && cfg_name == name) {
                 removed = true;
                 continue;
             }
@@ -141,15 +145,32 @@ bool EventManager::delete_event(int session_id, const std::string& name) {
     return removed && save_all(out);
 }
 
-bool EventManager::get_event(int session_id, const std::string& name, EventConfig& config) {
+bool EventManager::delete_session_events(int session_id) {
+    std::vector<std::string> lines;
+    if (!load_all(lines)) return false;
+    std::vector<std::string> out;
+    for (const auto& line : lines) {
+        try {
+            Json j = Json::parse(line);
+            if (j.value("session_id", -1) == session_id) continue;
+        } catch (...) {
+        }
+        out.push_back(line);
+    }
+    return save_all(out);
+}
+
+bool EventManager::get_event(int session_id, const std::string& fsdb_file, const std::string& name, EventConfig& config) {
     std::vector<std::string> lines;
     if (!load_all(lines)) return false;
     for (const auto& line : lines) {
         try {
             Json j = Json::parse(line);
             int sid = -1;
+            std::string stored_fsdb;
             EventConfig cfg;
-            if (json_to_config(j, sid, cfg) && sid == session_id && cfg.name == name) {
+            if (json_to_config(j, sid, stored_fsdb, cfg) &&
+                sid == session_id && stored_fsdb == fsdb_file && cfg.name == name) {
                 config = cfg;
                 return true;
             }
@@ -159,13 +180,14 @@ bool EventManager::get_event(int session_id, const std::string& name, EventConfi
     return false;
 }
 
-bool EventManager::get_latest_event(int session_id, std::string& name) {
+bool EventManager::get_latest_event(int session_id, const std::string& fsdb_file, std::string& name) {
     std::vector<std::string> lines;
     if (!load_all(lines)) return false;
     for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
         try {
             Json j = Json::parse(*it);
-            if (j.value("session_id", -1) == session_id) {
+            if (j.value("session_id", -1) == session_id &&
+                j.value("fsdb_file", "") == fsdb_file) {
                 name = j.value("name", "");
                 return !name.empty();
             }
@@ -175,14 +197,15 @@ bool EventManager::get_latest_event(int session_id, std::string& name) {
     return false;
 }
 
-std::vector<std::string> EventManager::list_events(int session_id) {
+std::vector<std::string> EventManager::list_events(int session_id, const std::string& fsdb_file) {
     std::vector<std::string> lines;
     std::vector<std::string> names;
     if (!load_all(lines)) return names;
     for (const auto& line : lines) {
         try {
             Json j = Json::parse(line);
-            if (j.value("session_id", -1) == session_id) {
+            if (j.value("session_id", -1) == session_id &&
+                j.value("fsdb_file", "") == fsdb_file) {
                 std::string name = j.value("name", "");
                 if (!name.empty()) names.push_back(name);
             }

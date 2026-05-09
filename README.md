@@ -176,7 +176,7 @@ tools/xwave-env axi osd -n my_axi -wr -json
 
 ### 7. 通用事件查询
 
-适用于 valid/ready/backpressure 风格接口，按时钟边沿采样并对表达式求值。
+适用于 valid/ready/backpressure 风格接口，按时钟边沿采样并对表达式求值。加载后的 event 配置会绑定到当前 Session 的 FSDB，避免复用旧 session id 时误用其他波形的配置。
 
 准备 `if0.event.json` 配置文件：
 
@@ -206,6 +206,13 @@ tools/xwave-env event find -n if0 -expr "vld && rdy && data != 0" -json
 ```
 
 表达式支持：信号别名、字段别名、`&&`、`||`、`!`、括号、`==`、`!=`，以及二进制/十六进制/十进制常量。
+
+配置校验规则：
+
+- `edge` 只能是 `posedge` 或 `negedge`，省略时默认为 `posedge`
+- `fields` 位段必须是合法非负整数，且引用已定义的 `signals` alias
+- 表达式会在扫描波形前先做语法和 alias 校验，即使时间窗口内没有事件也会报告坏表达式
+- 含 `x/z` 的布尔值或比较结果为 unknown，最终不会被当作匹配事件
 
 ### 8. Session 管理
 
@@ -307,3 +314,4 @@ xwave/
 - `list diff` 需至少 2 个信号
 - Session 以后台 daemon 运行，终端关闭不影响；用 `session kill` 清理
 - 默认输出为十六进制，格式为 `'h...`
+- event 配置按 `Session + FSDB` 绑定；旧版 `.xwave.events` 记录缺少 FSDB 元数据，不会被自动复用，重新执行 `xwave event <json> -n <name>` 即可迁移

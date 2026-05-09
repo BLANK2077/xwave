@@ -1,6 +1,16 @@
 # Build artifacts
 xwave
 *.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+
+# Local test/regression assets
+testdata/
+tests/
 
 # Logs
 *.log
