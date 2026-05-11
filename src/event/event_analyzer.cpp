@@ -182,6 +182,15 @@ static std::string extract_slice_value(const std::string& value, int left, int r
     return "'b" + bits.substr(start, end - start + 1);
 }
 
+static std::string with_binary_prefix(const std::string& value) {
+    if (value.size() >= 2 && value[0] == '\'' &&
+        (value[1] == 'b' || value[1] == 'B' || value[1] == 'h' || value[1] == 'H' ||
+         value[1] == 'd' || value[1] == 'D')) {
+        return value;
+    }
+    return "'b" + value;
+}
+
 class ExprParser {
 public:
     ExprParser(const std::string& expr, const std::map<std::string, std::string>& values)
@@ -395,47 +404,60 @@ bool EventAnalyzer::analyze(npiFsdbFileHandle file,
     if (!validator.eval(ignored, error)) return false;
 
     npiFsdbSigHandle clk = npi_fsdb_sig_by_name(file, config.clk.c_str(), NULL);
-    npiFsdbVctHandle clk_vct = npi_fsdb_create_vct(clk);
-    if (!clk_vct) {
-        error = "Failed to create clock VCT";
+    if (!clk) {
+        error = "Clock signal not found: " + config.clk;
         return false;
     }
 
-    npiFsdbL1Edge_e edge = config.posedge ? npiFsdbL1PositiveEdge : npiFsdbL1NegativeEdge;
-    int edge_ok = npi_fsdb_goto_time_edge(clk_vct, query.begin, edge);
-    if (!edge_ok && query.begin == 0) edge_ok = npi_fsdb_goto_first_edge(clk_vct, edge);
-
-    while (edge_ok) {
-        npiFsdbTime t = 0;
-        if (!npi_fsdb_vct_time(clk_vct, &t)) break;
-        if (t < query.begin) {
-            edge_ok = npi_fsdb_goto_next_edge(clk_vct, edge);
-            continue;
+    npiFsdbSigHandle rst = nullptr;
+    if (!config.rst_n.empty()) {
+        rst = npi_fsdb_sig_by_name(file, config.rst_n.c_str(), NULL);
+        if (!rst) {
+            error = "Reset signal not found: " + config.rst_n;
+            return false;
         }
-        if (t > query.end) break;
+    }
+
+    fsdbSigVec_t signal_handles;
+    for (const auto& path : paths) {
+        npiFsdbSigHandle sig = npi_fsdb_sig_by_name(file, path.c_str(), NULL);
+        if (!sig) {
+            error = "Signal not found: " + path;
+            return false;
+        }
+        signal_handles.push_back(sig);
+    }
+
+    fsdbSigVec_t all_handles;
+    all_handles.push_back(clk);
+    if (rst) all_handles.push_back(rst);
+    for (auto sig : signal_handles) all_handles.push_back(sig);
+
+    fsdbValVec_t init_values;
+    std::string prev_clk_value;
+    std::string rst_value = "'b1";
+    std::vector<std::string> values(aliases.size(), "'b0");
+    npiFsdbTime init_time = query.begin > 0 ? query.begin - 1 : query.begin;
+    if (npi_fsdb_sig_hdl_vec_value_at(all_handles, init_time, init_values, npiFsdbBinStrVal) &&
+        init_values.size() == all_handles.size()) {
+        size_t idx = 0;
+        prev_clk_value = with_binary_prefix(init_values[idx++]);
+        if (rst) rst_value = with_binary_prefix(init_values[idx++]);
+        for (size_t i = 0; i < aliases.size(); ++i) values[i] = with_binary_prefix(init_values[idx++]);
+    } else {
+        error = "Failed to read initial event signal values";
+        return false;
+    }
+
+    auto process_edge = [&](npiFsdbTime t, std::string& process_error) -> bool {
+        if (t < query.begin || t > query.end) return true;
 
         if (!config.rst_n.empty()) {
-            std::string rst;
-            if (!read_sig_value_at(file, config.rst_n.c_str(), t, 'B', rst)) {
-                error = "Failed to read reset value: " + config.rst_n;
-                npi_fsdb_release_vct(clk_vct);
-                return false;
-            }
-            if (!is_true_value(rst)) {
-                edge_ok = npi_fsdb_goto_next_edge(clk_vct, edge);
-                continue;
-            }
-        }
-
-        std::vector<std::string> values;
-        if (!read_sig_vec_value_at(file, paths, t, 'B', values) || values.size() != aliases.size()) {
-            error = "Failed to read event signal values";
-            npi_fsdb_release_vct(clk_vct);
-            return false;
+            if (!is_true_value(rst_value)) return true;
         }
 
         std::map<std::string, std::string> value_map;
-        for (size_t i = 0; i < aliases.size(); ++i) value_map[aliases[i]] = "'b" + values[i];
+        for (size_t i = 0; i < aliases.size(); ++i) value_map[aliases[i]] = values[i];
 
         std::map<std::string, std::string> field_map;
         for (const auto& kv : config.fields) {
@@ -443,8 +465,7 @@ bool EventAnalyzer::analyze(npiFsdbFileHandle file,
             if (sig_it == value_map.end()) continue;
             std::string sliced = extract_slice_value(sig_it->second, kv.second.left, kv.second.right);
             if (sliced.empty()) {
-                error = "Failed to slice field " + kv.first;
-                npi_fsdb_release_vct(clk_vct);
+                process_error = "Failed to slice field " + kv.first;
                 return false;
             }
             field_map[kv.first] = sliced;
@@ -453,10 +474,7 @@ bool EventAnalyzer::analyze(npiFsdbFileHandle file,
 
         TriValue matched = TriValue::False;
         ExprParser parser(query.expr, value_map);
-        if (!parser.eval(matched, error)) {
-            npi_fsdb_release_vct(clk_vct);
-            return false;
-        }
+        if (!parser.eval(matched, process_error)) return false;
         if (matched == TriValue::True) {
             EventRecord rec;
             rec.time = t;
@@ -464,13 +482,74 @@ bool EventAnalyzer::analyze(npiFsdbFileHandle file,
             for (const auto& kv : config.fields) rec.signals.erase(kv.first);
             rec.fields = field_map;
             records.push_back(rec);
-            if (query.limit > 0 && static_cast<int>(records.size()) >= query.limit) break;
+        }
+        return true;
+    };
+
+    npiFsdbTimeBasedVcIter iter;
+    iter.add(clk);
+    if (rst) iter.add(rst);
+    for (auto sig : signal_handles) iter.add(sig);
+    iter.iter_start(query.begin, query.end);
+
+    bool have_group = false;
+    bool clk_changed = false;
+    bool target_edge = false;
+    npiFsdbTime group_time = 0;
+
+    auto finish_group = [&]() -> bool {
+        if (!have_group || !clk_changed || !target_edge) return true;
+        if (!process_edge(group_time, error)) return false;
+        return query.limit <= 0 || static_cast<int>(records.size()) < query.limit;
+    };
+
+    npiFsdbTime curr_time = 0;
+    npiFsdbSigHandle changed_sig = nullptr;
+    bool keep_scanning = true;
+    while (keep_scanning && iter.iter_next(curr_time, changed_sig) > 0) {
+        if (!have_group) {
+            have_group = true;
+            group_time = curr_time;
+        } else if (curr_time != group_time) {
+            keep_scanning = finish_group();
+            if (!keep_scanning) break;
+            group_time = curr_time;
+            clk_changed = false;
+            target_edge = false;
         }
 
-        edge_ok = npi_fsdb_goto_next_edge(clk_vct, edge);
+        npiFsdbValue val;
+        val.format = npiFsdbBinStrVal;
+        std::string val_str;
+        if (iter.get_value(val) && val.value.str) val_str = with_binary_prefix(val.value.str);
+        else continue;
+
+        if (changed_sig == clk) {
+            TriValue old_clk = truth_value(prev_clk_value);
+            TriValue new_clk = truth_value(val_str);
+            target_edge = config.posedge
+                ? (old_clk == TriValue::False && new_clk == TriValue::True)
+                : (old_clk == TriValue::True && new_clk == TriValue::False);
+            prev_clk_value = val_str;
+            clk_changed = true;
+        } else if (rst && changed_sig == rst) {
+            rst_value = val_str;
+        } else {
+            for (size_t i = 0; i < signal_handles.size(); ++i) {
+                if (signal_handles[i] == changed_sig) {
+                    values[i] = val_str;
+                    break;
+                }
+            }
+        }
+    }
+    if (keep_scanning) finish_group();
+
+    iter.iter_stop();
+    if (!error.empty()) {
+        return false;
     }
 
-    npi_fsdb_release_vct(clk_vct);
     return true;
 }
 
