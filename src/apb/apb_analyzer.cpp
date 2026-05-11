@@ -366,4 +366,22 @@ bool ApbAnalyzer::cursor_last(const std::string& name, int filter, const ApbTran
     return false;
 }
 
+bool ApbAnalyzer::get_transactions_in_range(const std::string& name,
+                                            npiFsdbTime begin,
+                                            npiFsdbTime end,
+                                            std::vector<ApbContextTransaction>& out) const {
+    out.clear();
+    const ApbResult* r = get_result(name);
+    if (!r) return false;
+
+    for (const auto& txn : r->all) {
+        if (txn.time >= begin && txn.time <= end) {
+            ApbContextTransaction item;
+            item.txn = &txn;
+            out.push_back(item);
+        }
+    }
+    return true;
+}
+
 } // namespace xwave

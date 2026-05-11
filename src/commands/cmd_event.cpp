@@ -12,8 +12,10 @@
 #include <cstring>
 #include <cerrno>
 #include <climits>
+#include <cctype>
 #include <fstream>
 #include <sstream>
+#include <strings.h>
 #include <vector>
 
 namespace xwave {
@@ -33,6 +35,26 @@ static bool parse_nonnegative_int(const std::string& text, int& value) {
     long parsed = strtol(text.c_str(), &end, 10);
     if (errno != 0 || !end || *end != '\0' || parsed < 0 || parsed > INT_MAX) return false;
     value = static_cast<int>(parsed);
+    return true;
+}
+
+static bool parse_nonnegative_time_arg(const char* text, npiFsdbTime& value) {
+    if (!text || text[0] == '\0' || text[0] == '-') return false;
+    char* end = nullptr;
+    errno = 0;
+    double parsed = strtod(text, &end);
+    if (errno != 0 || end == text || parsed < 0) return false;
+    while (*end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+
+    double multiplier = 1000.0;
+    if (*end != '\0') {
+        if (strcasecmp(end, "us") == 0) multiplier = 1000000.0;
+        else if (strcasecmp(end, "ns") == 0) multiplier = 1000.0;
+        else if (strcasecmp(end, "ps") == 0) multiplier = 1.0;
+        else if (strcasecmp(end, "fs") == 0) multiplier = 0.001;
+        else return false;
+    }
+    value = static_cast<npiFsdbTime>(parsed * multiplier);
     return true;
 }
 
@@ -192,8 +214,8 @@ static bool resolve_event_name(EventManager& em,
 static void print_usage(const char* prog) {
     fprintf(stderr, "Usage: %s event <json-file> -n <name> [-s <sid>]\n", prog);
     fprintf(stderr, "       %s event list [-n <name>] [-s <sid>]\n", prog);
-    fprintf(stderr, "       %s event find -n <name> -expr <expr> [-b T] [-e T] [-json] [-s <sid>]\n", prog);
-    fprintf(stderr, "       %s event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-json] [-s <sid>]\n", prog);
+    fprintf(stderr, "       %s event find -n <name> -expr <expr> [-b T] [-e T] [-context T [-axi <name>] [-apb <name>]] [-json] [-s <sid>]\n", prog);
+    fprintf(stderr, "       %s event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-context T [-axi <name>] [-apb <name>]] [-json] [-s <sid>]\n", prog);
 }
 
 int cmd_event(int argc, char** argv) {
@@ -271,6 +293,10 @@ int cmd_event(int argc, char** argv) {
     int limit = -1;
     bool limit_specified = false;
     bool json = false;
+    bool context_specified = false;
+    npiFsdbTime context = 0;
+    const char* axi_name = nullptr;
+    const char* apb_name = nullptr;
 
     for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
@@ -278,6 +304,15 @@ int cmd_event(int argc, char** argv) {
         else if (strcmp(argv[i], "-expr") == 0 && i + 1 < argc) expr = argv[++i];
         else if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) begin_str = argv[++i];
         else if (strcmp(argv[i], "-e") == 0 && i + 1 < argc) end_str = argv[++i];
+        else if (strcmp(argv[i], "-context") == 0 && i + 1 < argc) {
+            if (!parse_nonnegative_time_arg(argv[++i], context)) {
+                fprintf(stderr, "Error: -context requires a non-negative time\n");
+                return 1;
+            }
+            context_specified = true;
+        }
+        else if (strcmp(argv[i], "-axi") == 0 && i + 1 < argc) axi_name = argv[++i];
+        else if (strcmp(argv[i], "-apb") == 0 && i + 1 < argc) apb_name = argv[++i];
         else if (strcmp(argv[i], "-limit") == 0 && i + 1 < argc) {
             limit = atoi(argv[++i]);
             limit_specified = true;
@@ -287,6 +322,14 @@ int cmd_event(int argc, char** argv) {
 
     if (!expr || expr[0] == '\0') {
         fprintf(stderr, "Error: -expr <expr> is required\n");
+        return 1;
+    }
+    if (context_specified && !axi_name && !apb_name) {
+        fprintf(stderr, "Error: -context requires at least one of -axi or -apb\n");
+        return 1;
+    }
+    if (!context_specified && (axi_name || apb_name)) {
+        fprintf(stderr, "Error: -axi/-apb require -context\n");
         return 1;
     }
     SessionInfo session;
@@ -304,12 +347,26 @@ int cmd_event(int argc, char** argv) {
     if (strcmp(subcmd, "find") == 0) limit = 1;
     else if (!limit_specified) limit = 1000;
 
-    std::string protocol_cmd = std::string(strcmp(subcmd, "find") == 0 ? CMD_EVENT_FIND : CMD_EVENT_EXPORT);
+    bool use_context = context_specified && (axi_name || apb_name);
+    const char* protocol_name = nullptr;
+    if (strcmp(subcmd, "find") == 0) {
+        protocol_name = use_context ? CMD_EVENT_FIND_CTX : CMD_EVENT_FIND;
+    } else {
+        protocol_name = use_context ? CMD_EVENT_EXPORT_CTX : CMD_EVENT_EXPORT;
+    }
+
+    std::string protocol_cmd = std::string(protocol_name);
     protocol_cmd += " " + event_name;
     protocol_cmd += " " + std::to_string(begin);
     protocol_cmd += " " + std::to_string(end);
     protocol_cmd += " " + std::to_string(limit);
-    protocol_cmd += json ? " json expr " : " text expr ";
+    protocol_cmd += json ? " json" : " text";
+    if (use_context) {
+        protocol_cmd += " " + std::to_string(context);
+        protocol_cmd += " " + std::string(axi_name ? axi_name : "-");
+        protocol_cmd += " " + std::string(apb_name ? apb_name : "-");
+    }
+    protocol_cmd += " expr ";
     protocol_cmd += expr;
 
     if (!send_command_and_print(session_id, protocol_cmd.c_str())) return 1;

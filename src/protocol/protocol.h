@@ -39,6 +39,8 @@
 
 #define CMD_EVENT_FIND      "EVENT_FIND"
 #define CMD_EVENT_EXPORT    "EVENT_EXPORT"
+#define CMD_EVENT_FIND_CTX  "EVENT_FIND_CTX"
+#define CMD_EVENT_EXPORT_CTX "EVENT_EXPORT_CTX"
 
 // End-of-response marker (server -> client)
 #define END_MARKER          "##END##\n"

@@ -368,22 +368,25 @@ static std::string format_apb_count_json(size_t count) {
     return json_response(j);
 }
 
-static std::string format_apb_txn_json(const xwave::ApbTransaction* txn) {
-    if (!txn) return std::string(END_MARKER);
+static Json apb_txn_to_json(const xwave::ApbTransaction* txn, bool include_type) {
     Json j;
+    if (!txn) return j;
     j["time"] = format_time(txn->time);
+    if (include_type) j["type"] = txn->is_write ? "WR" : "RD";
     j["addr"] = "'h" + txn->addr;
     j["data"] = "'h" + txn->data;
+    return j;
+}
+
+static std::string format_apb_txn_json(const xwave::ApbTransaction* txn) {
+    if (!txn) return std::string(END_MARKER);
+    Json j = apb_txn_to_json(txn, false);
     return json_response(j);
 }
 
 static std::string format_apb_txn_json_with_type(const xwave::ApbTransaction* txn) {
     if (!txn) return std::string(END_MARKER);
-    Json j;
-    j["time"] = format_time(txn->time);
-    j["type"] = txn->is_write ? "WR" : "RD";
-    j["addr"] = "'h" + txn->addr;
-    j["data"] = "'h" + txn->data;
+    Json j = apb_txn_to_json(txn, true);
     return json_response(j);
 }
 
@@ -640,9 +643,9 @@ static std::string format_axi_txn(const xwave::AxiTransaction* txn) {
     return out;
 }
 
-static std::string format_axi_txn_json(const xwave::AxiTransaction* txn) {
-    if (!txn) return std::string(END_MARKER);
+static Json axi_txn_to_json(const xwave::AxiTransaction* txn) {
     Json j;
+    if (!txn) return j;
     j["addr_time"] = format_time(txn->addr_time);
     j["type"] = txn->is_write ? "WR" : "RD";
     j["id"] = "'h" + txn->id;
@@ -657,6 +660,12 @@ static std::string format_axi_txn_json(const xwave::AxiTransaction* txn) {
     j["resp"] = "'h" + txn->resp;
     j["data"] = json_array_hex(txn->data);
     j["wstrb"] = json_array_hex(txn->wstrb);
+    return j;
+}
+
+static std::string format_axi_txn_json(const xwave::AxiTransaction* txn) {
+    if (!txn) return std::string(END_MARKER);
+    Json j = axi_txn_to_json(txn);
     return json_response(j);
 }
 
@@ -760,6 +769,17 @@ static std::string format_axi_stat(const char* label, const xwave::AxiStatResult
         + " samples=" + std::to_string(stat.samples) + "\n" + END_MARKER;
 }
 
+static long long signed_delta(npiFsdbTime t, npiFsdbTime base) {
+    if (t >= base) return static_cast<long long>(t - base);
+    return -static_cast<long long>(base - t);
+}
+
+static const char* relation_to_event(npiFsdbTime t, npiFsdbTime event_time) {
+    if (t < event_time) return "before_event";
+    if (t > event_time) return "after_event";
+    return "at_event";
+}
+
 static void handle_axi_stat(int client_fd, const char* name, bool latency, int filter,
                             const char* id_str, bool json) {
     if (!ensure_axi_analyzed(client_fd, name)) return;
@@ -805,13 +825,125 @@ static std::string format_event_records_json(const std::vector<xwave::EventRecor
     return json_response(j);
 }
 
+static Json axi_context_to_json(const char* axi_name,
+                                npiFsdbTime event_time,
+                                npiFsdbTime window_ps,
+                                const std::vector<xwave::AxiContextTransaction>& txns) {
+    Json ctx;
+    ctx["name"] = axi_name ? axi_name : "";
+    ctx["window_ps"] = window_ps;
+    ctx["transactions"] = Json::array();
+    for (const auto& item : txns) {
+        Json txn = axi_txn_to_json(item.txn);
+        txn["match_time"] = format_time(item.match_time);
+        txn["match_time_ps"] = item.match_time;
+        txn["relation"] = relation_to_event(item.match_time, event_time);
+        txn["delta_ps"] = signed_delta(item.match_time, event_time);
+        ctx["transactions"].push_back(txn);
+    }
+    return ctx;
+}
+
+static Json apb_context_to_json(const char* apb_name,
+                                npiFsdbTime event_time,
+                                npiFsdbTime window_ps,
+                                const std::vector<xwave::ApbContextTransaction>& txns) {
+    Json ctx;
+    ctx["name"] = apb_name ? apb_name : "";
+    ctx["window_ps"] = window_ps;
+    ctx["transactions"] = Json::array();
+    for (const auto& item : txns) {
+        Json txn = apb_txn_to_json(item.txn, true);
+        npiFsdbTime t = item.txn ? item.txn->time : 0;
+        txn["time_ps"] = t;
+        txn["relation"] = relation_to_event(t, event_time);
+        txn["delta_ps"] = signed_delta(t, event_time);
+        ctx["transactions"].push_back(txn);
+    }
+    return ctx;
+}
+
+static std::string format_event_records_with_context_json(
+        const std::vector<xwave::EventRecord>& records,
+        const std::vector<std::vector<xwave::AxiContextTransaction>>& axi_contexts,
+        const std::vector<std::vector<xwave::ApbContextTransaction>>& apb_contexts,
+        const char* axi_name,
+        const char* apb_name,
+        npiFsdbTime window_ps) {
+    Json j = Json::array();
+    for (size_t i = 0; i < records.size(); ++i) {
+        Json rec = event_record_to_json(records[i]);
+        Json context;
+        if (axi_name) context["axi"] = axi_context_to_json(axi_name, records[i].time, window_ps, axi_contexts[i]);
+        if (apb_name) context["apb"] = apb_context_to_json(apb_name, records[i].time, window_ps, apb_contexts[i]);
+        rec["context"] = context;
+        j.push_back(rec);
+    }
+    return json_response(j);
+}
+
+static std::string format_event_records_with_context_text(
+        const std::vector<xwave::EventRecord>& records,
+        const std::vector<std::vector<xwave::AxiContextTransaction>>& axi_contexts,
+        const std::vector<std::vector<xwave::ApbContextTransaction>>& apb_contexts,
+        const char* axi_name,
+        const char* apb_name,
+        npiFsdbTime window_ps) {
+    if (records.empty()) return std::string("(no event found)\n") + END_MARKER;
+    std::string out;
+    for (size_t i = 0; i < records.size(); ++i) {
+        const auto& rec = records[i];
+        out += "idx=" + std::to_string(i) + " time=" + format_time(rec.time);
+        for (const auto& kv : rec.signals) out += " " + kv.first + "=" + kv.second;
+        for (const auto& kv : rec.fields) out += " " + kv.first + "=" + kv.second;
+        out += "\n";
+        if (axi_name) {
+            out += "  axi_context name=" + std::string(axi_name)
+                + " window=" + format_time(window_ps);
+            if (axi_contexts[i].empty()) {
+                out += ": none\n";
+            } else {
+                out += "\n";
+                for (const auto& item : axi_contexts[i]) {
+                    out += "    " + format_axi_txn(item.txn)
+                        + " match_time=" + format_time(item.match_time)
+                        + " relation=" + relation_to_event(item.match_time, rec.time)
+                        + " delta_ps=" + std::to_string(signed_delta(item.match_time, rec.time))
+                        + "\n";
+                }
+            }
+        }
+        if (apb_name) {
+            out += "  apb_context name=" + std::string(apb_name)
+                + " window=" + format_time(window_ps);
+            if (apb_contexts[i].empty()) {
+                out += ": none\n";
+            } else {
+                out += "\n";
+                for (const auto& item : apb_contexts[i]) {
+                    npiFsdbTime t = item.txn ? item.txn->time : 0;
+                    out += "    " + format_apb_txn_with_type(item.txn)
+                        + " relation=" + relation_to_event(t, rec.time)
+                        + " delta_ps=" + std::to_string(signed_delta(t, rec.time))
+                        + "\n";
+                }
+            }
+        }
+    }
+    out += END_MARKER;
+    return out;
+}
+
 static void handle_event_query(int client_fd,
                                const char* name,
                                npiFsdbTime begin_time,
                                npiFsdbTime end_time,
                                int limit,
                                bool use_json,
-                               const char* expr) {
+                               const char* expr,
+                               const char* axi_context_name = nullptr,
+                               const char* apb_context_name = nullptr,
+                               npiFsdbTime context_window = 0) {
     xwave::EventManager em;
     xwave::EventConfig config;
     if (!em.get_event(g_session_id, g_fsdb_file_path, name, config)) {
@@ -831,7 +963,72 @@ static void handle_event_query(int client_fd,
         send_all(client_fd, err.c_str(), err.length());
         return;
     }
-    std::string resp = use_json ? format_event_records_json(records) : format_event_records_text(records);
+    bool use_axi_context = axi_context_name && strcmp(axi_context_name, "-") != 0;
+    bool use_apb_context = apb_context_name && strcmp(apb_context_name, "-") != 0;
+
+    std::string resp;
+    if (use_axi_context || use_apb_context) {
+        std::vector<std::vector<xwave::AxiContextTransaction>> axi_contexts(records.size());
+        std::vector<std::vector<xwave::ApbContextTransaction>> apb_contexts(records.size());
+
+        if (use_axi_context) {
+            xwave::AxiConfig axi_config;
+            if (!read_axi_from_registry(g_session_id, axi_context_name, axi_config)) {
+                std::string err = std::string(ERROR_PREFIX) + "AXI config not found: " + axi_context_name + "\n" + END_MARKER;
+                send_all(client_fd, err.c_str(), err.length());
+                return;
+            }
+            if (!g_axi_analyzer.analyze(axi_context_name, g_fsdb_file, axi_config)) {
+                std::string err = std::string(ERROR_PREFIX) + "Failed to analyze AXI: " + axi_context_name + "\n" + END_MARKER;
+                send_all(client_fd, err.c_str(), err.length());
+                return;
+            }
+            for (size_t i = 0; i < records.size(); ++i) {
+                npiFsdbTime ctx_begin = records[i].time > context_window ? records[i].time - context_window : 0;
+                npiFsdbTime ctx_end = records[i].time + context_window;
+                if (ctx_end < records[i].time) ctx_end = 0xFFFFFFFFFFFFFFFFULL;
+                if (!g_axi_analyzer.get_transactions_in_range(axi_context_name, ctx_begin, ctx_end, axi_contexts[i])) {
+                    std::string err = std::string(ERROR_PREFIX) + "AXI config not analyzed: " + axi_context_name + "\n" + END_MARKER;
+                    send_all(client_fd, err.c_str(), err.length());
+                    return;
+                }
+            }
+        }
+        if (use_apb_context) {
+            xwave::ApbConfig apb_config;
+            if (!read_apb_from_registry(g_session_id, apb_context_name, apb_config)) {
+                std::string err = std::string(ERROR_PREFIX) + "APB config not found: " + apb_context_name + "\n" + END_MARKER;
+                send_all(client_fd, err.c_str(), err.length());
+                return;
+            }
+            if (!g_apb_analyzer.analyze(apb_context_name, g_fsdb_file, apb_config)) {
+                std::string err = std::string(ERROR_PREFIX) + "Failed to analyze APB: " + apb_context_name + "\n" + END_MARKER;
+                send_all(client_fd, err.c_str(), err.length());
+                return;
+            }
+            for (size_t i = 0; i < records.size(); ++i) {
+                npiFsdbTime ctx_begin = records[i].time > context_window ? records[i].time - context_window : 0;
+                npiFsdbTime ctx_end = records[i].time + context_window;
+                if (ctx_end < records[i].time) ctx_end = 0xFFFFFFFFFFFFFFFFULL;
+                if (!g_apb_analyzer.get_transactions_in_range(apb_context_name, ctx_begin, ctx_end, apb_contexts[i])) {
+                    std::string err = std::string(ERROR_PREFIX) + "APB config not analyzed: " + apb_context_name + "\n" + END_MARKER;
+                    send_all(client_fd, err.c_str(), err.length());
+                    return;
+                }
+            }
+        }
+        resp = use_json
+            ? format_event_records_with_context_json(records, axi_contexts, apb_contexts,
+                                                     use_axi_context ? axi_context_name : nullptr,
+                                                     use_apb_context ? apb_context_name : nullptr,
+                                                     context_window)
+            : format_event_records_with_context_text(records, axi_contexts, apb_contexts,
+                                                     use_axi_context ? axi_context_name : nullptr,
+                                                     use_apb_context ? apb_context_name : nullptr,
+                                                     context_window);
+    } else {
+        resp = use_json ? format_event_records_json(records) : format_event_records_text(records);
+    }
     send_all(client_fd, resp.c_str(), resp.length());
 }
 
@@ -1137,6 +1334,44 @@ static bool handle_client(int client_fd, bool& should_quit) {
             handle_axi_stat(client_fd, name, latency, filter, has_id ? id_arg : nullptr, use_json);
         } else {
             const char* err = ERROR_PREFIX "Usage: AXI_LATENCY|AXI_OSD <name> [all|wr|rd] [id <id>] [json]\n" END_MARKER;
+            send_all(client_fd, err, strlen(err));
+        }
+        return true;
+    }
+
+    // Handle EVENT_FIND_CTX|EVENT_EXPORT_CTX <name> <begin> <end> <limit> <json|text> <context_ps> <axi_name|-> <apb_name|-> expr <expr>
+    if (strncmp(cmd, CMD_EVENT_FIND_CTX, strlen(CMD_EVENT_FIND_CTX)) == 0 ||
+        strncmp(cmd, CMD_EVENT_EXPORT_CTX, strlen(CMD_EVENT_EXPORT_CTX)) == 0) {
+        bool find = strncmp(cmd, CMD_EVENT_FIND_CTX, strlen(CMD_EVENT_FIND_CTX)) == 0;
+        size_t base_len = find ? strlen(CMD_EVENT_FIND_CTX) : strlen(CMD_EVENT_EXPORT_CTX);
+        char name[256] = {};
+        unsigned long long begin = 0;
+        unsigned long long end = 0;
+        unsigned long long context = 0;
+        int limit = -1;
+        char mode[16] = {};
+        char axi_name[256] = {};
+        char apb_name[256] = {};
+        const char* p = cmd + base_len;
+        int matched = sscanf(p, " %255s %llu %llu %d %15s %llu %255s %255s",
+                             name, &begin, &end, &limit, mode, &context, axi_name, apb_name);
+        const char* expr_p = strstr(p, " expr ");
+        if (matched >= 8 && expr_p) {
+            expr_p += strlen(" expr ");
+            bool use_json = strcmp(mode, "json") == 0;
+            if (find) limit = 1;
+            handle_event_query(client_fd,
+                               name,
+                               static_cast<npiFsdbTime>(begin),
+                               static_cast<npiFsdbTime>(end),
+                               limit,
+                               use_json,
+                               expr_p,
+                               strcmp(axi_name, "-") == 0 ? nullptr : axi_name,
+                               strcmp(apb_name, "-") == 0 ? nullptr : apb_name,
+                               static_cast<npiFsdbTime>(context));
+        } else {
+            const char* err = ERROR_PREFIX "Usage: EVENT_FIND_CTX|EVENT_EXPORT_CTX <name> <begin> <end> <limit> <json|text> <context_ps> <axi_name|-> <apb_name|-> expr <expr>\n" END_MARKER;
             send_all(client_fd, err, strlen(err));
         }
         return true;

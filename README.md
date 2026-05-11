@@ -208,6 +208,7 @@ tools/xwave-env event if0.event.json -n if0
 tools/xwave-env event export -n if0 -expr "vld && rdy" -json
 tools/xwave-env event export -n if0 -expr "vld && opcode == 0x10" -json
 tools/xwave-env event find -n if0 -expr "vld && rdy && data != 0" -json
+tools/xwave-env event find -n if0 -expr "vld && !bp" -context 200ns -axi axi0 -apb apb0 -json
 ```
 
 表达式支持：信号别名、字段别名、`&&`、`||`、`!`、括号、`==`、`!=`，以及二进制/十六进制/十进制常量。
@@ -219,6 +220,7 @@ tools/xwave-env event find -n if0 -expr "vld && rdy && data != 0" -json
 - 表达式会在扫描波形前先做语法和 alias 校验，即使时间窗口内没有事件也会报告坏表达式
 - 含 `x/z` 的布尔值或比较结果为 unknown，最终不会被当作匹配事件
 - `event export` 未显式指定 `-limit` 时默认最多导出 1000 条；需要全量导出时显式传入非正 limit
+- `-context <T>` 可搭配 `-axi <name>`、`-apb <name>` 或二者同时使用，在每条 event 命中点前后 `T` 时间窗口内附带协议事务上下文
 
 ### 8. Scope 信号发现
 
@@ -273,8 +275,8 @@ tools/xwave-env session kill all            # 关闭所有 Session
 | `xwave axi latency\|osd [-rd\|-wr\|-all] [-id <id>] [-json] [-n <name>] [-s <sid>]` | AXI 延迟/outstanding 分析 |
 | `xwave event <json> -n <name> [-s <sid>]` | 加载通用事件配置 |
 | `xwave event list [-n <name>] [-s <sid>]` | 查看通用事件配置 |
-| `xwave event find -n <name> -expr <expr> [-b T] [-e T] [-json] [-s <sid>]` | 查找第一个匹配事件 |
-| `xwave event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-json] [-s <sid>]` | 导出事件表，默认最多 1000 条 |
+| `xwave event find -n <name> -expr <expr> [-b T] [-e T] [-context T [-axi <axi>] [-apb <apb>]] [-json] [-s <sid>]` | 查找第一个匹配事件，可附带 AXI/APB 上下文 |
+| `xwave event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-context T [-axi <axi>] [-apb <apb>]] [-json] [-s <sid>]` | 导出事件表，默认最多 1000 条，可附带 AXI/APB 上下文 |
 
 ---
 

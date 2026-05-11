@@ -25,6 +25,11 @@ struct AxiTransaction {
     bool is_out_of_order = false;
 };
 
+struct AxiContextTransaction {
+    const AxiTransaction* txn = nullptr;
+    npiFsdbTime match_time = 0;
+};
+
 struct AxiOutstandingSample {
     npiFsdbTime time = 0;
     int read = 0;
@@ -105,6 +110,11 @@ public:
                            AxiStatResult& out) const;
     bool get_outstanding_stats(const std::string& name, int filter, const char* id_str,
                                AxiStatResult& out) const;
+
+    bool get_transactions_in_range(const std::string& name,
+                                   npiFsdbTime begin,
+                                   npiFsdbTime end,
+                                   std::vector<AxiContextTransaction>& out) const;
 
 private:
     std::map<std::string, AxiResult> results_;

@@ -913,4 +913,32 @@ bool AxiAnalyzer::get_outstanding_stats(const std::string& name, int filter, con
     return true;
 }
 
+bool AxiAnalyzer::get_transactions_in_range(const std::string& name,
+                                            npiFsdbTime begin,
+                                            npiFsdbTime end,
+                                            std::vector<AxiContextTransaction>& out) const {
+    out.clear();
+    const AxiResult* r = get_result(name);
+    if (!r) return false;
+
+    for (const auto& txn : r->all) {
+        bool matched = false;
+        npiFsdbTime match_time = txn.addr_time;
+        if (txn.addr_time >= begin && txn.addr_time <= end) {
+            matched = true;
+            match_time = txn.addr_time;
+        } else if (txn.resp_time >= begin && txn.resp_time <= end) {
+            matched = true;
+            match_time = txn.resp_time;
+        }
+        if (matched) {
+            AxiContextTransaction item;
+            item.txn = &txn;
+            item.match_time = match_time;
+            out.push_back(item);
+        }
+    }
+    return true;
+}
+
 } // namespace xwave

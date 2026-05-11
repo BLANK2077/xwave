@@ -219,12 +219,13 @@ xwave axi latency|osd [-rd|-wr|-all] [-id <id>] [-json] [-n <名>] [-s <sid>]
 ```bash
 xwave event <json文件> -n <配置名> [-s <sid>]     # 加载配置
 xwave event list [-n <配置名>] [-s <sid>]         # 查看配置
-xwave event find -n <名> -expr <表达式> [-b <T>] [-e <T>] [-json] [-s <sid>]
-xwave event export -n <名> -expr <表达式> [-b <T>] [-e <T>] [-limit N] [-json] [-s <sid>]
+xwave event find -n <名> -expr <表达式> [-b <T>] [-e <T>] [-context <T> [-axi <名>] [-apb <名>]] [-json] [-s <sid>]
+xwave event export -n <名> -expr <表达式> [-b <T>] [-e <T>] [-limit N] [-context <T> [-axi <名>] [-apb <名>]] [-json] [-s <sid>]
 ```
 
 - `find` 返回第一个匹配事件
 - `export` 导出匹配事件，未指定 `-limit` 时默认最多 1000 条；用 `-limit` 覆盖数量
+- `-context <T>` 可搭配 `-axi <名>`、`-apb <名>` 或二者同时使用，在每条 event 前后 `T` 时间窗口内附带协议事务上下文
 - 表达式会先做语法和 alias 校验；含 `x/z` 的比较结果为 unknown，不会作为匹配事件
 - 旧版 `.xwave.events` 缺少 FSDB 绑定信息时不会被复用，重新加载配置即可迁移
 
@@ -280,6 +281,7 @@ tools/xwave-env axi osd -n my_axi -wr -json       # 写 outstanding
 tools/xwave-env event if0.event.json -n if0
 tools/xwave-env event export -n if0 -expr "vld && rdy" -json
 tools/xwave-env event export -n if0 -expr "vld && !bp" -limit 10 -json
+tools/xwave-env event find -n if0 -expr "vld && !bp" -context 200ns -axi axi0 -apb apb0 -json
 tools/xwave-env event export -n if0 -expr "vld && opcode == 0x10" -json
 tools/xwave-env event find -n if0 -expr "vld && rdy && data != 0" -json
 ```

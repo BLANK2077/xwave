@@ -15,6 +15,10 @@ struct ApbTransaction {
     bool is_write;
 };
 
+struct ApbContextTransaction {
+    const ApbTransaction* txn = nullptr;
+};
+
 struct ApbResult {
     std::vector<ApbTransaction> all;
     std::vector<ApbTransaction> writes;
@@ -57,6 +61,11 @@ public:
     bool cursor_next(const std::string& name, int filter, const ApbTransaction*& out);
     bool cursor_prev(const std::string& name, int filter, const ApbTransaction*& out);
     bool cursor_last(const std::string& name, int filter, const ApbTransaction*& out);
+
+    bool get_transactions_in_range(const std::string& name,
+                                   npiFsdbTime begin,
+                                   npiFsdbTime end,
+                                   std::vector<ApbContextTransaction>& out) const;
 
 private:
     std::map<std::string, ApbResult> results_;
