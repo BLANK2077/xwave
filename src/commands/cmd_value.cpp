@@ -38,6 +38,13 @@ int cmd_value(int argc, char** argv) {
         }
         session_id = info.session_id;
     }
+    {
+        SessionManager manager;
+        if (!manager.ensure_session_current(session_id)) {
+            fprintf(stderr, "Error: Session %d unavailable\n", session_id);
+            return 1;
+        }
+    }
 
     npiFsdbTime t = parse_time_string(time_str);
 

@@ -16,6 +16,7 @@ description: >
 xwave 是基于 Synopsys NPI 的 FSDB 命令行查询工具。无需启动 Verdi 即可在命令行：
 - 查询信号值
 - 管理信号列表、批量查询、定位差异
+- 发现 FSDB scope 下的真实信号路径
 - 统计分析 APB / AXI 接口事务
 - 按表达式查询 valid/ready/backpressure 通用事件
 
@@ -73,7 +74,7 @@ tools/xwave-env session kill 1
 xwave open <fsdb-file>
 ```
 
-输出 Session ID 和时间范围。每次 `open` 会 fork 一个后台 daemon 进程。
+输出 Session ID 和时间范围。`open` 会规范化 FSDB 路径；同一文件已有健康 Session 时会复用。Session 会记录 FSDB 的 mtime/size/dev/inode，后续查询发现文件变化时会保留 Session ID 并自动重启 daemon。
 
 ### value — 单信号值查询
 
@@ -88,8 +89,11 @@ xwave value <信号路径> <时间> [-b|-d] [-s <sid>]
 ```bash
 xwave session list                      # 列出所有 Session
 xwave session doctor -s <sid> [-json]   # 诊断健康状态
+xwave session gc                        # 清理 stale/idle Session
 xwave session kill <id|all>             # 关闭 Session
 ```
+
+默认 idle timeout 为 1800 秒，可通过 `XWAVE_IDLE_TIMEOUT_SEC` 覆盖。
 
 ### list — 信号列表
 
@@ -99,10 +103,21 @@ xwave list add <信号路径> [-s <sid>] [-l <列表名>]
 xwave list del <信号路径|序号> [-s <sid>] [-l <列表名>]
 xwave list show [-s <sid>] [-l <列表名>]
 xwave list value <时间> [-l <列表名>] [-b|-d] [-json] [-s <sid>]
+xwave list validate [-l <列表名>] [-json] [-s <sid>]
 xwave list diff [-l <列表名>] [-b <T>] [-e <T>] [-s <sid>]
 ```
 
+`list add` 会校验信号是否存在；`list value` 遇到旧 List 中的无效信号会输出 `NOT_FOUND` 并返回非零。
+
 `list diff` 找到时间范围内最早一个值不全相等的时刻，需要列表中至少 2 个信号。
+
+### scope — 信号发现
+
+```bash
+xwave scope <scope路径> [-recursive] [-json] [-s <sid>]
+```
+
+用于列出 FSDB 中指定 scope 下的信号名，适合排查 VCS 对 SystemVerilog 数组、generate scope 的实际命名。
 
 ### apb — APB 接口
 
@@ -209,7 +224,7 @@ xwave event export -n <名> -expr <表达式> [-b <T>] [-e <T>] [-limit N] [-jso
 ```
 
 - `find` 返回第一个匹配事件
-- `export` 导出所有匹配事件，用 `-limit` 限制数量
+- `export` 导出匹配事件，未指定 `-limit` 时默认最多 1000 条；用 `-limit` 覆盖数量
 - 表达式会先做语法和 alias 校验；含 `x/z` 的比较结果为 unknown，不会作为匹配事件
 - 旧版 `.xwave.events` 缺少 FSDB 绑定信息时不会被复用，重新加载配置即可迁移
 

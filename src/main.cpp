@@ -1,6 +1,7 @@
 #include "commands/cmd_session.h"
 #include "commands/cmd_value.h"
 #include "commands/cmd_list.h"
+#include "commands/cmd_scope.h"
 #include "commands/cmd_apb.h"
 #include "commands/cmd_axi.h"
 #include "commands/cmd_event.h"
@@ -44,7 +45,7 @@ int main(int argc, char** argv) {
     // Session commands
     if (strcmp(cmd, "session") == 0) {
         if (argc < 3) {
-            fprintf(stderr, "Usage: %s session <list|kill|doctor>\n", argv[0]);
+            fprintf(stderr, "Usage: %s session <list|kill|gc|doctor>\n", argv[0]);
             return 1;
         }
 
@@ -60,6 +61,10 @@ int main(int argc, char** argv) {
                 return 1;
             }
             return cmd_session_kill(argv[3]);
+        }
+
+        if (strcmp(subcmd, "gc") == 0) {
+            return cmd_session_gc();
         }
 
         if (strcmp(subcmd, "doctor") == 0) {
@@ -79,6 +84,10 @@ int main(int argc, char** argv) {
     // List commands
     if (strcmp(cmd, "list") == 0) {
         return cmd_list(argc, argv);
+    }
+
+    if (strcmp(cmd, "scope") == 0) {
+        return cmd_scope(argc, argv);
     }
 
     // APB commands

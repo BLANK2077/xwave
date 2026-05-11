@@ -9,6 +9,9 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <ctime>
+#include <fstream>
+#include <sstream>
 
 namespace xwave {
 
@@ -18,6 +21,7 @@ void print_help(const char* prog) {
     printf("  %s open <fsdb-file>         Open FSDB and create new session\n", prog);
     printf("  %s session list             List all active sessions\n", prog);
     printf("  %s session kill <id|all>    Kill a specific session or all\n", prog);
+    printf("  %s session gc               Clean stale and idle sessions\n", prog);
     printf("  %s session doctor -s <sid> [-json]  Diagnose a session\n", prog);
     printf("  %s value <sig> <time> [-b|-d] [-s <sid>]  Query signal value\n", prog);
     printf("  %s list new <name> [-s <sid>]             Create a signal list\n", prog);
@@ -26,6 +30,8 @@ void print_help(const char* prog) {
     printf("  %s list show [-s <sid>] [-l <name>]       Show list contents\n", prog);
     printf("  %s list value <time> [-l <name>] [-b|-d] [-json] [-s <sid>]\n", prog);
     printf("  %s list diff [-l <name>] [-b T] [-e T] [-s <sid>]\n", prog);
+    printf("  %s list validate [-l <name>] [-json] [-s <sid>]\n", prog);
+    printf("  %s scope <path> [-recursive] [-json] [-s <sid>]\n", prog);
     printf("  %s apb <json> -n <name> [-s <sid>]        Load APB config\n", prog);
     printf("  %s apb list [-n <name>] [-s <sid>]        Show APB config\n", prog);
     printf("  %s apb wr [-n <name>] [-addr <a>] [-num <x>] [-last] [-json] [-s <sid>]\n", prog);
@@ -47,6 +53,31 @@ void print_help(const char* prog) {
     printf("  %s value top.clk 100ns -b\n", prog);
     printf("  %s session list\n", prog);
     printf("  %s session kill 1\n", prog);
+}
+
+static std::string format_epoch(time_t t) {
+    if (t <= 0) return "-";
+    char buf[64];
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmv);
+    return buf;
+}
+
+static long read_rss_kb(pid_t pid) {
+    std::string path = "/proc/" + std::to_string(pid) + "/status";
+    std::ifstream ifs(path);
+    std::string key;
+    while (ifs >> key) {
+        if (key == "VmRSS:") {
+            long kb = 0;
+            ifs >> kb;
+            return kb;
+        }
+        std::string rest;
+        std::getline(ifs, rest);
+    }
+    return -1;
 }
 
 int cmd_open(int argc, char** argv) {
@@ -78,19 +109,28 @@ int cmd_session_list() {
         return 0;
     }
 
-    printf("ID  | FSDB File                 | Socket Path\n");
-    printf("----|---------------------------|------------------------------\n");
+    printf("ID  | PID     | RSS(KB) | Created             | Last Active         | FSDB File\n");
+    printf("----|---------|---------|---------------------|---------------------|------------------------------\n");
 
     for (const auto& s : sessions) {
-        // Truncate fsdb name if too long
-        std::string fsdb = s.fsdb_file;
-        if (fsdb.length() > 25) {
-            fsdb = "..." + fsdb.substr(fsdb.length() - 22);
-        }
-        printf("%-3d | %-25s | %s\n", s.session_id, fsdb.c_str(), s.socket_path.c_str());
+        long rss = read_rss_kb(s.server_pid);
+        printf("%-3d | %-7d | %-7ld | %-19s | %-19s | %s\n",
+               s.session_id,
+               s.server_pid,
+               rss,
+               format_epoch(s.created_at).c_str(),
+               format_epoch(s.last_active).c_str(),
+               s.fsdb_file.c_str());
     }
 
     printf("\nTotal: %zu session(s)\n", sessions.size());
+    return 0;
+}
+
+int cmd_session_gc() {
+    SessionManager manager;
+    manager.gc_sessions();
+    printf("Session GC completed.\n");
     return 0;
 }
 

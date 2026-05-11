@@ -21,6 +21,7 @@ SRCS        = src/main.cpp \
               src/commands/cmd_session.cpp \
               src/commands/cmd_value.cpp \
               src/commands/cmd_list.cpp \
+              src/commands/cmd_scope.cpp \
               src/commands/cmd_apb.cpp \
               src/commands/cmd_axi.cpp \
               src/commands/cmd_event.cpp \

@@ -15,12 +15,14 @@
 namespace xwave {
 
 static int resolve_session_id(int sid) {
-    if (sid >= 0) return sid;
     SessionManager manager;
     SessionInfo info;
-    if (!manager.get_latest_session(info)) {
+    if (sid >= 0) {
+        if (!manager.get_session(sid, info)) return -1;
+    } else if (!manager.get_latest_session(info)) {
         return -1;
     }
+    if (!manager.ensure_session_current(info.session_id)) return -1;
     return info.session_id;
 }
 

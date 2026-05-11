@@ -8,6 +8,7 @@
 #include "../axi/axi_manager.h"
 #include "../event/event_analyzer.h"
 #include "../event/event_manager.h"
+#include "../session/session_registry.h"
 #include "../json.hpp"
 
 #include <cstdio>
@@ -23,6 +24,7 @@
 #include <signal.h>
 #include <cctype>
 #include <cstdint>
+#include <ctime>
 
 // NPI headers
 #include "npi.h"
@@ -39,6 +41,10 @@ static int g_srv_fd = -1;
 static char g_sock_path[SOCK_PATH_LEN];
 static npiFsdbFileHandle g_fsdb_file = nullptr;
 static std::string g_fsdb_file_path;
+static long g_fsdb_mtime = 0;
+static long long g_fsdb_size = 0;
+static unsigned long long g_fsdb_dev = 0;
+static unsigned long long g_fsdb_inode = 0;
 static xwave::ApbAnalyzer g_apb_analyzer;
 static xwave::AxiAnalyzer g_axi_analyzer;
 static xwave::EventAnalyzer g_event_analyzer;
@@ -53,6 +59,10 @@ static void cleanup_and_exit(int sig) {
     if (g_fsdb_file) {
         npi_fsdb_close(g_fsdb_file);
         g_fsdb_file = nullptr;
+    }
+    if (g_session_id > 0) {
+        SessionRegistry registry;
+        registry.remove(g_session_id);
     }
     npi_end();
     exit(0);
@@ -80,6 +90,29 @@ static bool send_all(int fd, const char* buf, size_t len) {
 
 static std::string json_response(const Json& j) {
     return j.dump() + "\n" + END_MARKER;
+}
+
+static bool stat_fsdb(long& mtime,
+                      long long& size,
+                      unsigned long long& dev,
+                      unsigned long long& inode) {
+    struct stat st;
+    if (stat(g_fsdb_file_path.c_str(), &st) != 0) return false;
+    mtime = static_cast<long>(st.st_mtime);
+    size = static_cast<long long>(st.st_size);
+    dev = static_cast<unsigned long long>(st.st_dev);
+    inode = static_cast<unsigned long long>(st.st_ino);
+    return true;
+}
+
+static bool fsdb_changed() {
+    long mtime = 0;
+    long long size = 0;
+    unsigned long long dev = 0;
+    unsigned long long inode = 0;
+    if (!stat_fsdb(mtime, size, dev, inode)) return true;
+    return mtime != g_fsdb_mtime || size != g_fsdb_size ||
+           dev != g_fsdb_dev || inode != g_fsdb_inode;
 }
 
 // Helper: read a signal list from the registry file by session_id and list_name
@@ -167,27 +200,120 @@ static void handle_list_value(int client_fd, const char* list_name, npiFsdbTime 
     }
 
     std::vector<std::string> values;
-    if (!read_sig_vec_value_at(g_fsdb_file, list.signals, time, fmt, values)) {
-        std::string err = std::string(ERROR_PREFIX) + "Failed to read list values\n" + END_MARKER;
-        send_all(client_fd, err.c_str(), err.length());
-        return;
-    }
+    std::vector<bool> found;
+    bool all_found = read_sig_vec_value_at_with_status(g_fsdb_file, list.signals, time, fmt, values, found);
 
     std::string response;
     if (json) {
         Json j = Json::object();
+        Json missing = Json::array();
+        Json value_obj = Json::object();
         for (size_t i = 0; i < list.signals.size(); ++i) {
-            j[list.signals[i]] = values[i];
+            value_obj[list.signals[i]] = values[i];
+            if (!found[i]) missing.push_back(list.signals[i]);
         }
-        response = json_response(j);
+        if (all_found) {
+            response = json_response(value_obj);
+        } else {
+            j["error"] = "List contains missing signals";
+            j["values"] = value_obj;
+            j["missing"] = missing;
+            response = std::string(ERROR_PREFIX) + j.dump() + "\n" + END_MARKER;
+        }
     } else {
         char fmt_lower = std::tolower(static_cast<unsigned char>(fmt));
         for (size_t i = 0; i < list.signals.size(); ++i) {
-            response += list.signals[i] + ":'" + fmt_lower + values[i] + "\n";
+            if (found[i]) response += list.signals[i] + ":'" + fmt_lower + values[i] + "\n";
+            else response += list.signals[i] + ":NOT_FOUND\n";
         }
+        if (!all_found) response = std::string(ERROR_PREFIX) + "List contains missing signals\n" + response;
         response += END_MARKER;
     }
     send_all(client_fd, response.c_str(), response.length());
+}
+
+static void handle_signal_check(int client_fd, const char* signal_path) {
+    if (npi_fsdb_sig_by_name(g_fsdb_file, signal_path, NULL)) {
+        std::string resp = std::string("OK\n") + END_MARKER;
+        send_all(client_fd, resp.c_str(), resp.length());
+    } else {
+        std::string err = std::string(ERROR_PREFIX) + "Signal not found: " + signal_path + "\n" + END_MARKER;
+        send_all(client_fd, err.c_str(), err.length());
+    }
+}
+
+static void handle_list_validate(int client_fd, const char* list_name, bool json) {
+    SignalList list;
+    if (!read_list_from_registry(g_session_id, list_name, list)) {
+        std::string err = std::string(ERROR_PREFIX) + "List not found: " + list_name + "\n" + END_MARKER;
+        send_all(client_fd, err.c_str(), err.length());
+        return;
+    }
+
+    bool all_found = true;
+    std::string text;
+    Json out = Json::array();
+    for (const auto& signal : list.signals) {
+        bool found = npi_fsdb_sig_by_name(g_fsdb_file, signal.c_str(), NULL) != nullptr;
+        if (!found) all_found = false;
+        if (json) {
+            Json item;
+            item["signal"] = signal;
+            item["status"] = found ? "ok" : "not_found";
+            out.push_back(item);
+        } else {
+            text += signal + ": " + (found ? "OK" : "NOT_FOUND") + "\n";
+        }
+    }
+
+    std::string resp;
+    if (json) {
+        resp = all_found ? json_response(out) : std::string(ERROR_PREFIX) + out.dump() + "\n" + END_MARKER;
+    } else {
+        if (!all_found) resp = std::string(ERROR_PREFIX) + "List contains missing signals\n";
+        resp += text;
+        resp += END_MARKER;
+    }
+    send_all(client_fd, resp.c_str(), resp.length());
+}
+
+static void handle_scope(int client_fd, const char* scope_path, bool recursive, bool json) {
+    FILE* fp = tmpfile();
+    if (!fp) {
+        std::string err = std::string(ERROR_PREFIX) + "Failed to create temporary scope output\n" + END_MARKER;
+        send_all(client_fd, err.c_str(), err.length());
+        return;
+    }
+    int ok = npi_fsdb_hier_tree_dump_sig(g_fsdb_file, fp, scope_path, recursive ? 1 : 0);
+    fflush(fp);
+    rewind(fp);
+
+    std::vector<std::string> lines;
+    char line[4096];
+    while (fgets(line, sizeof(line), fp)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
+        if (len > 0) lines.push_back(line);
+    }
+    fclose(fp);
+
+    if (!ok) {
+        std::string err = std::string(ERROR_PREFIX) + "Failed to list scope: " + scope_path + "\n" + END_MARKER;
+        send_all(client_fd, err.c_str(), err.length());
+        return;
+    }
+
+    std::string resp;
+    if (json) {
+        Json arr = Json::array();
+        for (const auto& l : lines) arr.push_back(l);
+        resp = json_response(arr);
+    } else {
+        for (const auto& l : lines) resp += l + "\n";
+        if (lines.empty()) resp += "(no signals found)\n";
+        resp += END_MARKER;
+    }
+    send_all(client_fd, resp.c_str(), resp.length());
 }
 
 // Helper: read an APB config from the registry file by session_id and name
@@ -746,6 +872,15 @@ static bool handle_client(int client_fd, bool& should_quit) {
         return true;
     }
 
+    if (fsdb_changed()) {
+        const char* err = ERROR_PREFIX "FSDB changed; session restart required\n" END_MARKER;
+        send_all(client_fd, err, strlen(err));
+        return true;
+    }
+
+    SessionRegistry registry;
+    registry.touch(g_session_id, time(nullptr));
+
     // Handle VALUE <signal> <time> <fmt>
     if (strncmp(cmd, CMD_VALUE, strlen(CMD_VALUE)) == 0) {
         char signal_path[1024];
@@ -772,6 +907,45 @@ static bool handle_client(int client_fd, bool& should_quit) {
             handle_list_value(client_fd, list_name, t, fmt[0], json);
         } else {
             const char* err = ERROR_PREFIX "Usage: LIST_VALUE <list> <time> <fmt> [json]\n" END_MARKER;
+            send_all(client_fd, err, strlen(err));
+        }
+        return true;
+    }
+
+    // Handle SIGNAL_CHECK <signal>
+    if (strncmp(cmd, CMD_SIGNAL_CHECK, strlen(CMD_SIGNAL_CHECK)) == 0) {
+        char signal_path[1024];
+        if (sscanf(cmd + strlen(CMD_SIGNAL_CHECK), " %1023s", signal_path) == 1) {
+            handle_signal_check(client_fd, signal_path);
+        } else {
+            const char* err = ERROR_PREFIX "Usage: SIGNAL_CHECK <signal>\n" END_MARKER;
+            send_all(client_fd, err, strlen(err));
+        }
+        return true;
+    }
+
+    // Handle LIST_VALIDATE <list_name> [json]
+    if (strncmp(cmd, CMD_LIST_VALIDATE, strlen(CMD_LIST_VALIDATE)) == 0) {
+        char list_name[256];
+        if (sscanf(cmd + strlen(CMD_LIST_VALIDATE), " %255s", list_name) == 1) {
+            bool json = (strstr(cmd, "json") != nullptr);
+            handle_list_validate(client_fd, list_name, json);
+        } else {
+            const char* err = ERROR_PREFIX "Usage: LIST_VALIDATE <list> [json]\n" END_MARKER;
+            send_all(client_fd, err, strlen(err));
+        }
+        return true;
+    }
+
+    // Handle SCOPE <scope_path> <recursive> <json|text>
+    if (strncmp(cmd, CMD_SCOPE, strlen(CMD_SCOPE)) == 0) {
+        char scope_path[1024];
+        int recursive = 0;
+        char mode[16] = {};
+        if (sscanf(cmd + strlen(CMD_SCOPE), " %1023s %d %15s", scope_path, &recursive, mode) >= 2) {
+            handle_scope(client_fd, scope_path, recursive != 0, strcmp(mode, "json") == 0);
+        } else {
+            const char* err = ERROR_PREFIX "Usage: SCOPE <scope> <recursive> <json|text>\n" END_MARKER;
             send_all(client_fd, err, strlen(err));
         }
         return true;
@@ -1025,6 +1199,7 @@ int server_main(int argc, char** argv) {
     // Parse FSDB file
     const char* fsdb_file = argv[arg_idx];
     g_fsdb_file_path = fsdb_file;
+    stat_fsdb(g_fsdb_mtime, g_fsdb_size, g_fsdb_dev, g_fsdb_inode);
 
     // Redirect stdout to capture NPI init messages, but keep a copy
     int stdout_copy = dup(STDOUT_FILENO);
@@ -1094,14 +1269,33 @@ int server_main(int argc, char** argv) {
         return 1;
     }
 
+    const char* env_timeout = getenv("XWAVE_IDLE_TIMEOUT_SEC");
+    int idle_timeout = env_timeout ? atoi(env_timeout) : 1800;
+    if (idle_timeout <= 0) idle_timeout = 1800;
+    time_t last_active = time(nullptr);
+
     // Accept loop
     while (true) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(g_srv_fd, &rfds);
+        struct timeval tv;
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        int ready = select(g_srv_fd + 1, &rfds, nullptr, nullptr, &tv);
+        if (ready < 0) continue;
+        if (ready == 0) {
+            if (time(nullptr) - last_active > idle_timeout) break;
+            continue;
+        }
+
         int client_fd = accept(g_srv_fd, nullptr, nullptr);
         if (client_fd < 0) continue;
 
         bool quit = false;
         handle_client(client_fd, quit);
         close(client_fd);
+        last_active = time(nullptr);
 
         if (quit) break;
     }
@@ -1112,6 +1306,10 @@ int server_main(int argc, char** argv) {
     if (g_fsdb_file) {
         npi_fsdb_close(g_fsdb_file);
         g_fsdb_file = nullptr;
+    }
+    {
+        SessionRegistry registry;
+        registry.remove(g_session_id);
     }
     npi_end();
 

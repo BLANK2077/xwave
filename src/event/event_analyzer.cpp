@@ -403,7 +403,7 @@ bool EventAnalyzer::analyze(npiFsdbFileHandle file,
 
     npiFsdbL1Edge_e edge = config.posedge ? npiFsdbL1PositiveEdge : npiFsdbL1NegativeEdge;
     int edge_ok = npi_fsdb_goto_time_edge(clk_vct, query.begin, edge);
-    if (!edge_ok) edge_ok = npi_fsdb_goto_first_edge(clk_vct, edge);
+    if (!edge_ok && query.begin == 0) edge_ok = npi_fsdb_goto_first_edge(clk_vct, edge);
 
     while (edge_ok) {
         npiFsdbTime t = 0;

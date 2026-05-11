@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <signal.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 
 namespace xwave {
 
@@ -26,28 +27,44 @@ bool SessionRegistry::unlock_file(int fd) {
 }
 
 std::string SessionRegistry::serialize(const SessionInfo& session) {
-    char buf[1024];
-    snprintf(buf, sizeof(buf), "%d|%s|%s|%d|%ld\n",
+    char buf[2048];
+    snprintf(buf, sizeof(buf), "%d|%s|%s|%d|%ld|%ld|%ld|%lld|%llu|%llu\n",
              session.session_id,
              session.socket_path.c_str(),
              session.fsdb_file.c_str(),
              session.server_pid,
-             session.created_at);
+             session.created_at,
+             session.last_active,
+             session.fsdb_mtime,
+             session.fsdb_size,
+             session.fsdb_dev,
+             session.fsdb_inode);
     return std::string(buf);
 }
 
 bool SessionRegistry::parse_line(const char* line, SessionInfo& session) {
-    char socket_path[256];
-    char fsdb_file[256];
+    char socket_path[512] = {};
+    char fsdb_file[1024] = {};
     int pid;
     long created_at;
+    long last_active = 0;
+    long fsdb_mtime = 0;
+    long long fsdb_size = 0;
+    unsigned long long fsdb_dev = 0;
+    unsigned long long fsdb_inode = 0;
 
-    if (sscanf(line, "%d|%255[^|]|%255[^|]|%d|%ld",
+    int matched = sscanf(line, "%d|%511[^|]|%1023[^|]|%d|%ld|%ld|%ld|%lld|%llu|%llu",
                &session.session_id,
                socket_path,
                fsdb_file,
                &pid,
-               &created_at) != 5) {
+               &created_at,
+               &last_active,
+               &fsdb_mtime,
+               &fsdb_size,
+               &fsdb_dev,
+               &fsdb_inode);
+    if (matched != 5 && matched != 10) {
         return false;
     }
 
@@ -55,6 +72,20 @@ bool SessionRegistry::parse_line(const char* line, SessionInfo& session) {
     session.fsdb_file = fsdb_file;
     session.server_pid = pid;
     session.created_at = created_at;
+    session.last_active = (matched == 10) ? last_active : created_at;
+    session.fsdb_mtime = fsdb_mtime;
+    session.fsdb_size = fsdb_size;
+    session.fsdb_dev = fsdb_dev;
+    session.fsdb_inode = fsdb_inode;
+    if (matched == 5) {
+        struct stat st;
+        if (stat(session.fsdb_file.c_str(), &st) == 0) {
+            session.fsdb_mtime = static_cast<long>(st.st_mtime);
+            session.fsdb_size = static_cast<long long>(st.st_size);
+            session.fsdb_dev = static_cast<unsigned long long>(st.st_dev);
+            session.fsdb_inode = static_cast<unsigned long long>(st.st_ino);
+        }
+    }
     return true;
 }
 
@@ -104,6 +135,46 @@ bool SessionRegistry::add(const SessionInfo& session) {
     close(fd);
 
     return written == (ssize_t)data.length();
+}
+
+bool SessionRegistry::upsert(const SessionInfo& session) {
+    std::vector<SessionInfo> sessions;
+    load_all(sessions);
+
+    bool replaced = false;
+    for (auto& s : sessions) {
+        if (s.session_id == session.session_id) {
+            s = session;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) sessions.push_back(session);
+
+    int fd = open(registry_path_, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return false;
+
+    if (!lock_file(fd)) {
+        close(fd);
+        return false;
+    }
+
+    bool ok = true;
+    for (const auto& s : sessions) {
+        std::string data = serialize(s);
+        if (write(fd, data.c_str(), data.length()) != (ssize_t)data.length()) ok = false;
+    }
+
+    unlock_file(fd);
+    close(fd);
+    return ok;
+}
+
+bool SessionRegistry::touch(int session_id, time_t last_active) {
+    SessionInfo session;
+    if (!get(session_id, session)) return false;
+    session.last_active = last_active;
+    return upsert(session);
 }
 
 bool SessionRegistry::remove(int session_id) {
@@ -220,6 +291,42 @@ bool SessionRegistry::cleanup_stale() {
     close(fd);
 
     return true;
+}
+
+bool SessionRegistry::cleanup_idle(time_t now, int timeout_sec) {
+    if (timeout_sec <= 0) return true;
+
+    std::vector<SessionInfo> sessions;
+    if (!load_all(sessions)) return false;
+
+    std::vector<SessionInfo> valid_sessions;
+    for (const auto& session : sessions) {
+        time_t last = session.last_active ? session.last_active : session.created_at;
+        if (last > 0 && now - last > timeout_sec) {
+            if (kill(session.server_pid, 0) == 0) kill(session.server_pid, SIGTERM);
+            unlink(session.socket_path.c_str());
+        } else {
+            valid_sessions.push_back(session);
+        }
+    }
+
+    int fd = open(registry_path_, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return false;
+
+    if (!lock_file(fd)) {
+        close(fd);
+        return false;
+    }
+
+    bool ok = true;
+    for (const auto& session : valid_sessions) {
+        std::string data = serialize(session);
+        if (write(fd, data.c_str(), data.length()) != (ssize_t)data.length()) ok = false;
+    }
+
+    unlock_file(fd);
+    close(fd);
+    return ok;
 }
 
 bool SessionRegistry::clear_all() {

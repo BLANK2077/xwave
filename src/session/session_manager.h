@@ -12,7 +12,9 @@ enum class SessionHealthStatus {
     ProcessExited,
     SocketMissing,
     ConnectFailed,
-    PingFailed
+    PingFailed,
+    FsdbChanged,
+    FsdbMissing
 };
 
 struct SessionHealth {
@@ -35,6 +37,15 @@ public:
     // This spawns the server process
     int create_session(const std::string& fsdb_file);
 
+    // Restart a session daemon in place, preserving session ID and configs
+    bool restart_session(int session_id);
+
+    // Ensure the daemon matches the current FSDB fingerprint
+    bool ensure_session_current(int session_id);
+
+    // Update activity timestamp
+    bool touch_session(int session_id);
+
     // Kill a specific session (calls npi_end() in server)
     bool kill_session(int session_id);
 
@@ -49,6 +60,9 @@ public:
 
     // List all active sessions
     std::vector<SessionInfo> list_sessions();
+
+    // Clean up stale and idle sessions
+    bool gc_sessions();
 
     // Diagnose a session without mutating the registry
     SessionHealth diagnose_session(int session_id);
@@ -67,6 +81,13 @@ private:
 
     // Fork and exec server process
     pid_t spawn_server(int session_id, const std::string& fsdb_file);
+
+    bool stop_process(const SessionInfo& session, bool remove_record, bool remove_events);
+    bool populate_fsdb_metadata(const std::string& fsdb_file, SessionInfo& session);
+    bool current_fsdb_metadata(const SessionInfo& session, SessionInfo& current);
+    bool fsdb_metadata_matches(const SessionInfo& expected, const SessionInfo& current) const;
+    bool wait_for_server(int session_id, pid_t pid);
+    std::string canonicalize_fsdb_path(const std::string& fsdb_file);
 };
 
 } // namespace xtrace

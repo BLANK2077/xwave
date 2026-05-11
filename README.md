@@ -10,8 +10,10 @@ xwave 是基于 Synopsys NPI 的 FSDB 波形命令行查询工具。无需启动
 
 - **单二进制双模式**：同一个可执行文件既是 CLI 客户端，也是后台 Daemon 服务端（通过 `--server` 启动）
 - **多 Session 管理**：每个 Session 独立加载一个 FSDB 文件，拥有独立的 NPI 上下文和 Unix Domain Socket
+- **FSDB 变动自恢复**：Session 记录 FSDB fingerprint；文件被替换或更新后，下次访问会自动重启对应 daemon
 - **信号单点查询**：`xwave value <signal> <time>`，支持十六进制（默认）、二进制、十进制
 - **信号列表追踪**：创建/删除/查看 List，批量查询 List 内所有信号在某一时刻的值，支持 JSON 输出
+- **Scope 信号发现**：`xwave scope <path>` 列出 FSDB 中指定层级下的信号名
 - **波形差异定位**：`xwave list diff`，查找 List 中信号不全相等的最早时间点
 - **APB 接口统计**：加载 APB JSON 配置后，可统计读写次数、按地址/序号/最后一次查询，支持游标式遍历
 - **AXI 接口统计**：加载 AXI JSON 配置后，可统计读写事务、按地址/ID 过滤，以及延迟和 outstanding 分析
@@ -112,9 +114,12 @@ tools/xwave-env list show -l my_signals
 # 批量查询
 tools/xwave-env list value 15ns -l my_signals
 tools/xwave-env list value 15ns -l my_signals -d -json
+
+# 校验 List 中信号是否存在
+tools/xwave-env list validate -l my_signals
 ```
 
-若不指定 `-l <name>`，默认操作该 Session 下最近被修改的 List。
+`list add` 会先校验信号是否存在；`list value` 遇到旧 List 中的无效信号会输出 `NOT_FOUND` 并返回非零。若不指定 `-l <name>`，默认操作该 Session 下最近被修改的 List。
 
 ### 4. 波形差异定位
 
@@ -213,16 +218,29 @@ tools/xwave-env event find -n if0 -expr "vld && rdy && data != 0" -json
 - `fields` 位段必须是合法非负整数，且引用已定义的 `signals` alias
 - 表达式会在扫描波形前先做语法和 alias 校验，即使时间窗口内没有事件也会报告坏表达式
 - 含 `x/z` 的布尔值或比较结果为 unknown，最终不会被当作匹配事件
+- `event export` 未显式指定 `-limit` 时默认最多导出 1000 条；需要全量导出时显式传入非正 limit
 
-### 8. Session 管理
+### 8. Scope 信号发现
+
+```bash
+tools/xwave-env scope xring_tb_top.u_dut.u_pkt_fetch
+tools/xwave-env scope xring_tb_top.u_dut.u_pkt_fetch -recursive -json
+```
+
+用于确认 FSDB 中真实信号路径，尤其适合排查 SystemVerilog 数组或 generate scope 在 VCS FSDB 中的命名。
+
+### 9. Session 管理
 
 ```bash
 tools/xwave-env session list                # 列出所有 Session
 tools/xwave-env session doctor -s 1         # 诊断健康状态
 tools/xwave-env session doctor -s 1 -json   # JSON 格式诊断
+tools/xwave-env session gc                  # 清理 stale/idle Session
 tools/xwave-env session kill 1              # 关闭指定 Session
 tools/xwave-env session kill all            # 关闭所有 Session
 ```
+
+`open` 会规范化 FSDB 路径并复用同一文件的健康 Session。Session 记录 FSDB 的 mtime/size/dev/inode；若文件发生变化，下一次查询会提示并自动重启 daemon，保留原 Session ID 和已加载配置。
 
 ---
 
@@ -233,13 +251,16 @@ tools/xwave-env session kill all            # 关闭所有 Session
 | `xwave open <fsdb-file>` | 打开 FSDB，创建新 Session |
 | `xwave session list` | 列出所有活跃 Session |
 | `xwave session doctor -s <sid> [-json]` | 诊断指定 Session 健康状态 |
+| `xwave session gc` | 清理 stale/idle Session |
 | `xwave session kill <id\|all>` | 关闭指定或所有 Session |
+| `xwave scope <path> [-recursive] [-json] [-s <sid>]` | 列出指定 scope 下的 FSDB 信号 |
 | `xwave value <sig> <time> [-b\|-d] [-s <sid>]` | 单信号值查询 |
 | `xwave list new <name> [-s <sid>]` | 创建新 List |
 | `xwave list add <sig> [-s <sid>] [-l <name>]` | 向 List 添加信号 |
 | `xwave list del <sig\|idx> [-s <sid>] [-l <name>]` | 从 List 删除信号 |
 | `xwave list show [-s <sid>] [-l <name>]` | 显示 List 内容 |
 | `xwave list value <time> [-l <name>] [-b\|-d] [-json] [-s <sid>]` | 批量查询 List 值 |
+| `xwave list validate [-l <name>] [-json] [-s <sid>]` | 校验 List 中信号是否存在 |
 | `xwave list diff [-l <name>] [-b T] [-e T] [-s <sid>]` | 查找最早差异时间 |
 | `xwave apb <json> -n <name> [-s <sid>]` | 加载 APB 配置 |
 | `xwave apb list [-n <name>] [-s <sid>]` | 查看 APB 配置 |
@@ -253,7 +274,7 @@ tools/xwave-env session kill all            # 关闭所有 Session
 | `xwave event <json> -n <name> [-s <sid>]` | 加载通用事件配置 |
 | `xwave event list [-n <name>] [-s <sid>]` | 查看通用事件配置 |
 | `xwave event find -n <name> -expr <expr> [-b T] [-e T] [-json] [-s <sid>]` | 查找第一个匹配事件 |
-| `xwave event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-json] [-s <sid>]` | 导出事件表 |
+| `xwave event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-json] [-s <sid>]` | 导出事件表，默认最多 1000 条 |
 
 ---
 
@@ -312,6 +333,7 @@ xwave/
 - 信号路径需与 FSDB 中的层级完全一致（例如 `test_top.u_data_gen.cnt_a`）
 - 不指定 `-s` 时自动用最新 Session；不指定 `-l`/`-n` 时自动用最近修改的列表/配置
 - `list diff` 需至少 2 个信号
-- Session 以后台 daemon 运行，终端关闭不影响；用 `session kill` 清理
+- Session 以后台 daemon 运行，终端关闭不影响；用 `session kill` 或 `session gc` 清理
+- 默认 idle timeout 为 1800 秒，可通过 `XWAVE_IDLE_TIMEOUT_SEC` 覆盖
 - 默认输出为十六进制，格式为 `'h...`
 - event 配置按 `Session + FSDB` 绑定；旧版 `.xwave.events` 记录缺少 FSDB 元数据，不会被自动复用，重新执行 `xwave event <json> -n <name>` 即可迁移

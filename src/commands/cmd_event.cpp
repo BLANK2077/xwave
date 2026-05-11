@@ -20,8 +20,10 @@ namespace xwave {
 
 static bool resolve_session_info(int sid, SessionInfo& info) {
     SessionManager manager;
-    if (sid >= 0) return manager.get_session(sid, info);
-    return manager.get_latest_session(info);
+    bool ok = sid >= 0 ? manager.get_session(sid, info) : manager.get_latest_session(info);
+    if (!ok) return false;
+    if (!manager.ensure_session_current(info.session_id)) return false;
+    return manager.get_session(info.session_id, info);
 }
 
 static bool parse_nonnegative_int(const std::string& text, int& value) {
@@ -267,6 +269,7 @@ int cmd_event(int argc, char** argv) {
     const char* begin_str = nullptr;
     const char* end_str = nullptr;
     int limit = -1;
+    bool limit_specified = false;
     bool json = false;
 
     for (int i = 3; i < argc; ++i) {
@@ -275,7 +278,10 @@ int cmd_event(int argc, char** argv) {
         else if (strcmp(argv[i], "-expr") == 0 && i + 1 < argc) expr = argv[++i];
         else if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) begin_str = argv[++i];
         else if (strcmp(argv[i], "-e") == 0 && i + 1 < argc) end_str = argv[++i];
-        else if (strcmp(argv[i], "-limit") == 0 && i + 1 < argc) limit = atoi(argv[++i]);
+        else if (strcmp(argv[i], "-limit") == 0 && i + 1 < argc) {
+            limit = atoi(argv[++i]);
+            limit_specified = true;
+        }
         else if (strcmp(argv[i], "-json") == 0) json = true;
     }
 
@@ -296,7 +302,7 @@ int cmd_event(int argc, char** argv) {
     npiFsdbTime begin = begin_str ? parse_time_string(begin_str) : 0;
     npiFsdbTime end = end_str ? parse_time_string(end_str) : 0xFFFFFFFFFFFFFFFFULL;
     if (strcmp(subcmd, "find") == 0) limit = 1;
-    else if (limit <= 0) limit = -1;
+    else if (!limit_specified) limit = 1000;
 
     std::string protocol_cmd = std::string(strcmp(subcmd, "find") == 0 ? CMD_EVENT_FIND : CMD_EVENT_EXPORT);
     protocol_cmd += " " + event_name;

@@ -25,6 +25,14 @@ bool read_sig_vec_value_at(npiFsdbFileHandle file,
                            char fmt,
                            std::vector<std::string>& out_values);
 
+// Read multiple signal values independently, preserving per-signal status.
+bool read_sig_vec_value_at_with_status(npiFsdbFileHandle file,
+                                       const std::vector<std::string>& signals,
+                                       npiFsdbTime time,
+                                       char fmt,
+                                       std::vector<std::string>& out_values,
+                                       std::vector<bool>& out_found);
+
 // Find the earliest time where not all signals in the list have the same value
 bool find_list_diff(npiFsdbFileHandle file,
                     const std::vector<std::string>& signals,

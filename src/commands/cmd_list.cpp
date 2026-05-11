@@ -11,12 +11,14 @@
 namespace xwave {
 
 static int resolve_session_id(int sid) {
-    if (sid >= 0) return sid;
     SessionManager manager;
     SessionInfo info;
-    if (!manager.get_latest_session(info)) {
+    if (sid >= 0) {
+        if (!manager.get_session(sid, info)) return -1;
+    } else if (!manager.get_latest_session(info)) {
         return -1;
     }
+    if (!manager.ensure_session_current(info.session_id)) return -1;
     return info.session_id;
 }
 
@@ -34,7 +36,7 @@ static bool resolve_list_name(ListManager& lm, int session_id, const char* expli
 
 int cmd_list(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s list <new|add|del|show|value|diff> ...\n\n", argv[0]);
+        fprintf(stderr, "Usage: %s list <new|add|del|show|value|diff|validate> ...\n\n", argv[0]);
         print_help(argv[0]);
         return 1;
     }
@@ -123,11 +125,41 @@ int cmd_list(int argc, char** argv) {
         ListManager lm;
         std::string name;
         if (!resolve_list_name(lm, session_id, list_name, name)) return 1;
+        std::string check_payload;
+        std::string check_cmd = std::string(CMD_SIGNAL_CHECK) + " " + signal;
+        if (!send_command_capture(session_id, check_cmd.c_str(), check_payload)) {
+            fprintf(stderr, "Error: Signal not found: %s\n", signal);
+            return 1;
+        }
         if (!lm.add_signal(session_id, name, signal)) {
             fprintf(stderr, "Error: Failed to add signal to list '%s'\n", name.c_str());
             return 1;
         }
         printf("Added '%s' to list '%s'.\n", signal, name.c_str());
+        return 0;
+    }
+
+    // --- list validate [-l <name>] [-json] [-s <sid>] ---
+    if (strcmp(subcmd, "validate") == 0) {
+        int session_id = -1;
+        const char* list_name = nullptr;
+        bool json = false;
+        for (int i = 3; i < argc; ++i) {
+            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+            else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc) list_name = argv[++i];
+            else if (strcmp(argv[i], "-json") == 0) json = true;
+        }
+        session_id = resolve_session_id(session_id);
+        if (session_id < 0) {
+            fprintf(stderr, "Error: No active sessions\n");
+            return 1;
+        }
+        ListManager lm;
+        std::string name;
+        if (!resolve_list_name(lm, session_id, list_name, name)) return 1;
+        std::string cmd = std::string(CMD_LIST_VALIDATE) + " " + name;
+        if (json) cmd += " json";
+        if (!send_command_and_print(session_id, cmd.c_str())) return 1;
         return 0;
     }
 

@@ -41,6 +41,28 @@ bool read_sig_vec_value_at(npiFsdbFileHandle file,
     return false;
 }
 
+bool read_sig_vec_value_at_with_status(npiFsdbFileHandle file,
+                                       const std::vector<std::string>& signals,
+                                       npiFsdbTime time,
+                                       char fmt,
+                                       std::vector<std::string>& out_values,
+                                       std::vector<bool>& out_found) {
+    out_values.clear();
+    out_found.clear();
+    out_values.reserve(signals.size());
+    out_found.reserve(signals.size());
+
+    bool all_found = true;
+    for (const auto& signal : signals) {
+        std::string value;
+        bool found = read_sig_value_at(file, signal.c_str(), time, fmt, value);
+        out_found.push_back(found);
+        out_values.push_back(found ? value : "NOT_FOUND");
+        if (!found) all_found = false;
+    }
+    return all_found;
+}
+
 bool find_list_diff(npiFsdbFileHandle file,
                     const std::vector<std::string>& signals,
                     npiFsdbTime begin_time,
