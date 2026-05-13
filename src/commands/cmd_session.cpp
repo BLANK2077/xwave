@@ -45,14 +45,215 @@ void print_help(const char* prog) {
     printf("  %s axi latency|osd [-rd|-wr|-all] [-id <id>] [-json] [-n <name>] [-s <sid>]\n", prog);
     printf("  %s event <json> -n <name> [-s <sid>]     Load generic event config\n", prog);
     printf("  %s event list [-n <name>] [-s <sid>]     Show event configs\n", prog);
-    printf("  %s event find -n <name> -expr <expr> [-b T] [-e T] [-json] [-s <sid>]\n", prog);
-    printf("  %s event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-json] [-s <sid>]\n", prog);
-    printf("  %s help                     Show this help\n", prog);
+    printf("  %s event find -n <name> -expr <expr> [-b T] [-e T] [-context T [-axi <name>] [-apb <name>]] [-json] [-s <sid>]\n", prog);
+    printf("  %s event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-context T [-axi <name>] [-apb <name>]] [-json] [-s <sid>]\n", prog);
+    printf("  %s help [topic]             Show this help or detailed topic help\n", prog);
     printf("\nExamples:\n");
     printf("  %s open waves.fsdb\n", prog);
     printf("  %s value top.clk 100ns -b\n", prog);
     printf("  %s session list\n", prog);
     printf("  %s session kill 1\n", prog);
+    printf("\nDetailed help topics:\n");
+    printf("  %s help open|session|value|list|scope|apb|axi|event\n", prog);
+    printf("\nTime arguments accept us/ns/ps/fs suffixes. Default unit is ns.\n");
+}
+
+static void print_open_help(const char* prog) {
+    printf("Usage:\n");
+    printf("  %s open <fsdb-file>\n\n", prog);
+    printf("Description:\n");
+    printf("  Open an FSDB waveform and create or reuse a daemon session.\n");
+    printf("  The FSDB path is canonicalized; if a healthy session already owns the same\n");
+    printf("  file, xwave reuses it instead of opening another daemon.\n\n");
+    printf("Arguments:\n");
+    printf("  <fsdb-file>  FSDB file path. Relative paths are resolved to canonical paths.\n\n");
+    printf("Session behavior:\n");
+    printf("  xwave records mtime, size, device, and inode. Later session commands compare\n");
+    printf("  this fingerprint; if the file changed, the daemon is restarted in place.\n");
+}
+
+static void print_session_help(const char* prog) {
+    printf("Usage:\n");
+    printf("  %s session list\n", prog);
+    printf("  %s session doctor -s <sid> [-json]\n", prog);
+    printf("  %s session gc\n", prog);
+    printf("  %s session kill <id|all>\n\n", prog);
+    printf("Subcommands:\n");
+    printf("  list              Show session ID, PID, RSS, created time, last active time, and FSDB path.\n");
+    printf("  doctor            Check registry, FSDB fingerprint, process, socket, and PING/PONG health.\n");
+    printf("  gc                Remove stale sessions and sessions idle longer than the timeout.\n");
+    printf("  kill <id|all>     Stop one daemon or all daemons and remove related session records.\n\n");
+    printf("Options:\n");
+    printf("  -s <sid>          Session ID to diagnose. Required by session doctor.\n");
+    printf("  -json             Print doctor output as JSON.\n\n");
+    printf("Environment:\n");
+    printf("  XWAVE_IDLE_TIMEOUT_SEC overrides the default 1800-second idle timeout used by gc.\n");
+}
+
+static void print_value_help(const char* prog) {
+    printf("Usage:\n");
+    printf("  %s value <signal> <time> [-b|-d] [-s <sid>]\n\n", prog);
+    printf("Arguments:\n");
+    printf("  <signal>          Full FSDB signal path.\n");
+    printf("  <time>            Query time. Supports us/ns/ps/fs suffixes; default is ns.\n\n");
+    printf("Options:\n");
+    printf("  -b                Print binary value.\n");
+    printf("  -d                Print decimal value.\n");
+    printf("  -s <sid>          Use this session. If omitted, the latest session is used.\n\n");
+    printf("Default output radix is hexadecimal.\n");
+}
+
+static void print_list_help(const char* prog) {
+    printf("Usage:\n");
+    printf("  %s list new <name> [-s <sid>]\n", prog);
+    printf("  %s list add <sig> [-s <sid>] [-l <name>]\n", prog);
+    printf("  %s list del <sig|idx> [-s <sid>] [-l <name>]\n", prog);
+    printf("  %s list show [-s <sid>] [-l <name>]\n", prog);
+    printf("  %s list value <time> [-l <name>] [-b|-d] [-json] [-s <sid>]\n", prog);
+    printf("  %s list validate [-l <name>] [-json] [-s <sid>]\n", prog);
+    printf("  %s list diff [-l <name>] [-b T] [-e T] [-s <sid>]\n\n", prog);
+    printf("Subcommands:\n");
+    printf("  new <name>        Create a named signal list for a session.\n");
+    printf("  add <sig>         Add a signal after checking it exists in the current FSDB.\n");
+    printf("  del <sig|idx>     Delete by signal path or 1-based index from list show.\n");
+    printf("  show              Print list contents with 1-based indices.\n");
+    printf("  value <time>      Query all list signals at one time.\n");
+    printf("  validate          Check whether every list signal still exists in the FSDB.\n");
+    printf("  diff              Find the earliest time where at least two list signals differ.\n\n");
+    printf("Options:\n");
+    printf("  -l <name>         Select a list. If omitted, the most recently modified list is used.\n");
+    printf("  -s <sid>          Select a session. If omitted, the latest session is used.\n");
+    printf("  -b                Binary output for list value.\n");
+    printf("  -d                Decimal output for list value.\n");
+    printf("  -json             JSON output for value or validate.\n");
+    printf("  -b T              Begin time for diff. Default is 0.\n");
+    printf("  -e T              End time for diff. Default is waveform end.\n\n");
+    printf("Notes:\n");
+    printf("  list value prints NOT_FOUND and exits non-zero if an old list contains a missing signal.\n");
+    printf("  list diff requires at least two signals.\n");
+}
+
+static void print_scope_help(const char* prog) {
+    printf("Usage:\n");
+    printf("  %s scope <path> [-recursive] [-json] [-s <sid>]\n\n", prog);
+    printf("Arguments:\n");
+    printf("  <path>            FSDB scope path to inspect.\n\n");
+    printf("Options:\n");
+    printf("  -recursive        Include signals under child scopes recursively.\n");
+    printf("  -json             Print structured JSON output.\n");
+    printf("  -s <sid>          Select a session. If omitted, the latest session is used.\n\n");
+    printf("Use scope to discover real dumped signal names, especially generated scopes or arrays.\n");
+}
+
+static void print_apb_help(const char* prog) {
+    printf("Usage:\n");
+    printf("  %s apb <json-file> -n <name> [-s <sid>]\n", prog);
+    printf("  %s apb list [-n <name>] [-s <sid>]\n", prog);
+    printf("  %s apb wr|rd [-n <name>] [-addr <addr>] [-num <x>] [-last] [-json] [-s <sid>]\n", prog);
+    printf("  %s apb begin|next|pre|last [-rd|-wr] [-json] [-n <name>] [-s <sid>]\n\n", prog);
+    printf("Config JSON fields:\n");
+    printf("  Required: paddr, pwdata, prdata, pwrite, penable, psel, clk, rst_n.\n");
+    printf("  Optional: edge, with posedge as default. Use negedge for falling-edge sampling.\n\n");
+    printf("Subcommands:\n");
+    printf("  <json-file>       Load and persist an APB config under -n <name>.\n");
+    printf("  list              Show a named config, or the latest APB config if -n is omitted.\n");
+    printf("  wr|rd             Count or select write/read transactions.\n");
+    printf("  begin             Move cursor to the first matching transaction.\n");
+    printf("  next              Move cursor to the next matching transaction.\n");
+    printf("  pre               Move cursor to the previous matching transaction.\n");
+    printf("  last              Move cursor to the last matching transaction.\n\n");
+    printf("Options:\n");
+    printf("  -n <name>         Config name. Required when loading; latest config is used for queries if omitted.\n");
+    printf("  -s <sid>          Select a session. If omitted, the latest session is used.\n");
+    printf("  -addr <addr>      Filter transactions by address. Hex and decimal are accepted.\n");
+    printf("  -num <x>          Select the x-th matching transaction, 1-based.\n");
+    printf("  -last             Select the last matching transaction.\n");
+    printf("  -rd               Cursor direction filter: read transactions only.\n");
+    printf("  -wr               Cursor direction filter: write transactions only.\n");
+    printf("  -json             Print JSON output.\n");
+}
+
+static void print_axi_help(const char* prog) {
+    printf("Usage:\n");
+    printf("  %s axi <json-file> -n <name> [-s <sid>]\n", prog);
+    printf("  %s axi list [-n <name>] [-s <sid>]\n", prog);
+    printf("  %s axi wr|rd [-n <name>] [-addr <addr>] [-id <id>] [-num <x>] [-last] [-json] [-s <sid>]\n", prog);
+    printf("  %s axi begin|next|pre|last [-rd|-wr] [-json] [-n <name>] [-s <sid>]\n", prog);
+    printf("  %s axi latency|osd [-rd|-wr|-all] [-id <id>] [-json] [-n <name>] [-s <sid>]\n\n", prog);
+    printf("Config JSON fields:\n");
+    printf("  Required: awaddr, awid, awlen, awsize, awburst, awvalid, awready,\n");
+    printf("            wdata, wstrb, wlast, wvalid, wready, bid, bresp, bvalid, bready,\n");
+    printf("            araddr, arid, arlen, arsize, arburst, arvalid, arready,\n");
+    printf("            rid, rdata, rresp, rlast, rvalid, rready, clk, rst_n.\n");
+    printf("  Optional: edge, with posedge as default. Use negedge for falling-edge sampling.\n\n");
+    printf("Subcommands:\n");
+    printf("  <json-file>       Load and persist an AXI config under -n <name>.\n");
+    printf("  list              Show a named config, or the latest AXI config if -n is omitted.\n");
+    printf("  wr|rd             Count or select write/read transactions.\n");
+    printf("  begin|next|pre|last  Cursor navigation through transactions.\n");
+    printf("  latency           Report read/write latency statistics.\n");
+    printf("  osd               Report outstanding depth statistics.\n\n");
+    printf("Options:\n");
+    printf("  -n <name>         Config name. Required when loading; latest config is used for queries if omitted.\n");
+    printf("  -s <sid>          Select a session. If omitted, the latest session is used.\n");
+    printf("  -addr <addr>      Filter transactions by address. Hex and decimal are accepted.\n");
+    printf("  -id <id>          Filter by AXI ID. Hex and decimal are accepted.\n");
+    printf("  -num <x>          Select the x-th matching transaction, 1-based.\n");
+    printf("  -last             Select the last matching transaction.\n");
+    printf("  -rd               Filter read transactions.\n");
+    printf("  -wr               Filter write transactions.\n");
+    printf("  -all              Include read and write transactions for latency/osd. This is the default.\n");
+    printf("  -json             Print JSON output.\n");
+}
+
+static void print_event_help(const char* prog) {
+    printf("Usage:\n");
+    printf("  %s event <json-file> -n <name> [-s <sid>]\n", prog);
+    printf("  %s event list [-n <name>] [-s <sid>]\n", prog);
+    printf("  %s event find -n <name> -expr <expr> [-b T] [-e T] [-context T [-axi <name>] [-apb <name>]] [-json] [-s <sid>]\n", prog);
+    printf("  %s event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-context T [-axi <name>] [-apb <name>]] [-json] [-s <sid>]\n\n", prog);
+    printf("Config JSON fields:\n");
+    printf("  Required: clk and signals. signals maps aliases to full FSDB paths.\n");
+    printf("  Optional: rst_n, edge, fields. edge must be posedge or negedge.\n");
+    printf("  fields can be \"alias[high:low]\" strings or objects with signal/left/right.\n\n");
+    printf("Subcommands:\n");
+    printf("  <json-file>       Load and persist a generic event config under -n <name>.\n");
+    printf("  list              List event config names, or print one config with -n.\n");
+    printf("  find              Print the first clock edge where the expression is true.\n");
+    printf("  export            Print matching events. Default limit is 1000 rows.\n\n");
+    printf("Options:\n");
+    printf("  -n <name>         Event config name. Required for load/find/export; latest config is used by list if omitted.\n");
+    printf("  -s <sid>          Select a session. If omitted, the latest session is used.\n");
+    printf("  -expr <expr>      Boolean expression over signal aliases and field aliases.\n");
+    printf("  -b T              Begin time. Default is 0.\n");
+    printf("  -e T              End time. Default is waveform end.\n");
+    printf("  -limit N          Max export rows. Default is 1000; non-positive means no limit.\n");
+    printf("  -context T        Attach protocol context in [event_time - T, event_time + T].\n");
+    printf("  -axi <name>       Include AXI transactions from this AXI config. Requires -context.\n");
+    printf("  -apb <name>       Include APB transactions from this APB config. Requires -context.\n");
+    printf("  -json             Print JSON output.\n\n");
+    printf("Expression syntax:\n");
+    printf("  Supports aliases, fields, !, &&, ||, ==, !=, parentheses, and constants such as 0xff or 0b1010.\n");
+    printf("  Comparisons containing x/z evaluate to unknown and do not match events.\n");
+}
+
+void print_help_topic(const char* prog, const char* topic) {
+    if (!topic || strcmp(topic, "all") == 0) {
+        print_help(prog);
+        return;
+    }
+    if (strcmp(topic, "open") == 0) print_open_help(prog);
+    else if (strcmp(topic, "session") == 0) print_session_help(prog);
+    else if (strcmp(topic, "value") == 0) print_value_help(prog);
+    else if (strcmp(topic, "list") == 0) print_list_help(prog);
+    else if (strcmp(topic, "scope") == 0) print_scope_help(prog);
+    else if (strcmp(topic, "apb") == 0) print_apb_help(prog);
+    else if (strcmp(topic, "axi") == 0) print_axi_help(prog);
+    else if (strcmp(topic, "event") == 0) print_event_help(prog);
+    else {
+        fprintf(stderr, "Unknown help topic: %s\n\n", topic);
+        print_help(prog);
+    }
 }
 
 static std::string format_epoch(time_t t) {

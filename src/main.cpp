@@ -33,7 +33,11 @@ int main(int argc, char** argv) {
 
     // Help
     if (strcmp(cmd, "help") == 0 || strcmp(cmd, "-h") == 0 || strcmp(cmd, "--help") == 0) {
-        print_help(argv[0]);
+        if (strcmp(cmd, "help") == 0 && argc >= 3) {
+            print_help_topic(argv[0], argv[2]);
+        } else {
+            print_help(argv[0]);
+        }
         return 0;
     }
 

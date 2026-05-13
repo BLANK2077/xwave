@@ -64,6 +64,140 @@ tools/xwave-env session kill 1
 
 时间格式：`us`/`ns`/`ps`/`fs` 后缀（不区分大小写），默认 `ns`。例如 `10ns`, `100us`, `500ps`。
 
+## 详细命令选项速查
+
+### `open`
+
+| 位置/选项 | 作用 |
+|-----------|------|
+| `<fsdb-file>` | 要打开的 FSDB 文件。相对路径会规范化为 canonical path；同一 canonical FSDB 已有健康 Session 时会复用。 |
+
+`open` 会记录 FSDB 的 mtime/size/dev/inode。后续访问该 Session 时如果文件变化，xwave 会提示并自动重启 daemon，保留 Session ID。
+
+### `session`
+
+| 子命令/选项 | 作用 |
+|-------------|------|
+| `list` | 列出 Session ID、PID、RSS、创建时间、最后活跃时间和 FSDB 路径。 |
+| `doctor` | 检查 registry、FSDB fingerprint、进程、socket 和 PING/PONG 健康状态。 |
+| `gc` | 清理 stale Session 和超过 idle timeout 的 Session。 |
+| `kill <id>` | 停止指定 Session daemon，并删除对应 registry/config 清理项。 |
+| `kill all` | 停止并清理所有 Session。 |
+| `-s <sid>` | `doctor` 要诊断的 Session ID。 |
+| `-json` | `doctor` 输出 JSON，便于脚本判断。 |
+
+默认 idle timeout 是 1800 秒，可用 `XWAVE_IDLE_TIMEOUT_SEC` 覆盖。
+
+### `value`
+
+| 位置/选项 | 作用 |
+|-----------|------|
+| `<信号路径>` | FSDB 中的完整信号路径。 |
+| `<时间>` | 查询时间，支持 `us/ns/ps/fs`，默认 `ns`。 |
+| `-b` | 二进制输出。 |
+| `-d` | 十进制输出。 |
+| `-s <sid>` | 指定 Session；省略则使用最新 Session。 |
+
+默认输出为十六进制。
+
+### `list`
+
+| 子命令/选项 | 作用 |
+|-------------|------|
+| `new <列表名>` | 为当前 Session 创建信号列表。 |
+| `add <信号路径>` | 加入信号；写入前会 probe 信号存在性，失败则不污染列表。 |
+| `del <信号路径\|序号>` | 按信号路径或 `list show` 的 1-based 序号删除。 |
+| `show` | 显示列表内容和序号。 |
+| `value <时间>` | 查询列表内所有信号在指定时间的值。 |
+| `validate` | 校验列表内信号是否仍存在于当前 FSDB。 |
+| `diff` | 查找列表中至少两个信号值不全相等的最早时间。 |
+| `-l <列表名>` | 指定列表；省略则使用当前 Session 最近修改的列表。 |
+| `-s <sid>` | 指定 Session；省略则使用最新 Session。 |
+| `-b` | `list value` 二进制输出。 |
+| `-d` | `list value` 十进制输出。 |
+| `-json` | `list value` / `list validate` 输出 JSON。 |
+| `-b <T>` | `list diff` 开始时间，默认 0。 |
+| `-e <T>` | `list diff` 结束时间，默认波形结束。 |
+
+`list value` 遇到旧列表里的无效信号会显示 `NOT_FOUND` 并返回非零。`list diff` 至少需要 2 个信号。
+
+### `scope`
+
+| 位置/选项 | 作用 |
+|-----------|------|
+| `<scope路径>` | 要列出的 FSDB scope。 |
+| `-recursive` | 递归列出子 scope 下的信号。 |
+| `-json` | JSON 输出。 |
+| `-s <sid>` | 指定 Session；省略则使用最新 Session。 |
+
+`scope` 用于确认 VCS FSDB 中真实 signal path，特别是数组、generate scope、层次名被展开后的形态。
+
+### `apb`
+
+| 子命令/选项 | 作用 |
+|-------------|------|
+| `<json文件> -n <配置名>` | 加载 APB 配置并持久化。 |
+| `list` | 查看指定 APB 配置；省略 `-n` 时查看最近配置。 |
+| `wr` / `rd` | 查询 APB 写/读事务数量或指定事务。 |
+| `begin` | 游标定位到第一条匹配事务。 |
+| `next` | 游标移动到下一条匹配事务。 |
+| `pre` | 游标移动到上一条匹配事务。 |
+| `last` | 游标定位到最后一条匹配事务。 |
+| `-n <配置名>` | 配置名；加载时必需，查询时省略则使用最近配置。 |
+| `-s <sid>` | 指定 Session；省略则使用最新 Session。 |
+| `-addr <addr>` | 按地址过滤，支持十六进制或十进制。 |
+| `-num <x>` | 选择第 x 条匹配事务，1-based。 |
+| `-last` | 选择最后一条匹配事务。 |
+| `-rd` | 游标命令只看读事务。 |
+| `-wr` | 游标命令只看写事务。 |
+| `-json` | JSON 输出。 |
+
+APB JSON 必需字段：`paddr/pwdata/prdata/pwrite/penable/psel/clk/rst_n`；`edge` 可选，默认 `posedge`。
+
+### `axi`
+
+| 子命令/选项 | 作用 |
+|-------------|------|
+| `<json文件> -n <配置名>` | 加载 AXI 配置并持久化。 |
+| `list` | 查看指定 AXI 配置；省略 `-n` 时查看最近配置。 |
+| `wr` / `rd` | 查询 AXI 写/读事务数量或指定事务。 |
+| `begin` / `next` / `pre` / `last` | 游标遍历事务。 |
+| `latency` | 统计读/写事务延迟。 |
+| `osd` | 统计 outstanding 深度。 |
+| `-n <配置名>` | 配置名；加载时必需，查询时省略则使用最近配置。 |
+| `-s <sid>` | 指定 Session；省略则使用最新 Session。 |
+| `-addr <addr>` | 按地址过滤，支持十六进制或十进制。 |
+| `-id <id>` | 按 AXI ID 过滤，支持十六进制或十进制。 |
+| `-num <x>` | 选择第 x 条匹配事务，1-based。 |
+| `-last` | 选择最后一条匹配事务。 |
+| `-rd` | 只看读事务。 |
+| `-wr` | 只看写事务。 |
+| `-all` | `latency/osd` 同时统计读写事务；默认行为。 |
+| `-json` | JSON 输出。 |
+
+AXI JSON 需要完整 5 通道信号、`clk`、`rst_n`；`edge` 可选，默认 `posedge`。
+
+### `event`
+
+| 子命令/选项 | 作用 |
+|-------------|------|
+| `<json文件> -n <配置名>` | 加载通用 event 配置并绑定当前 Session 的 FSDB。 |
+| `list` | 不带 `-n` 时列出当前 FSDB 下的 event 配置名；带 `-n` 时打印该配置。 |
+| `find` | 返回第一条表达式为 true 的 event。 |
+| `export` | 导出匹配 event 列表，默认最多 1000 条。 |
+| `-n <配置名>` | event 配置名；加载/find/export 必需。 |
+| `-s <sid>` | 指定 Session；省略则使用最新 Session。 |
+| `-expr <表达式>` | 事件表达式，支持 alias、field、`!`、`&&`、`||`、`==`、`!=`、括号和常量。 |
+| `-b <T>` | 查询开始时间，默认 0。 |
+| `-e <T>` | 查询结束时间，默认波形结束。 |
+| `-limit N` | `export` 最大输出条数；默认 1000，非正数表示不限制。 |
+| `-context <T>` | 对每个 event 附带 `[event_time - T, event_time + T]` 内的协议事务上下文。 |
+| `-axi <配置名>` | 在 context 中附带 AXI 事务；必须和 `-context` 同时使用。 |
+| `-apb <配置名>` | 在 context 中附带 APB 事务；必须和 `-context` 同时使用。 |
+| `-json` | JSON 输出；context 模式下会增加 `context.axi` / `context.apb` 字段。 |
+
+`-context` 必须搭配至少一个 `-axi` 或 `-apb`；`-axi/-apb` 不能脱离 `-context` 单独使用。表达式会在扫描前做语法和 alias 校验；含 `x/z` 的比较结果为 unknown，最终不会匹配 event。
+
 ---
 
 ## 子命令参考

@@ -21,5 +21,6 @@ int cmd_session_gc();
 
 // Print help message
 void print_help(const char* prog);
+void print_help_topic(const char* prog, const char* topic);
 
 } // namespace xwave
