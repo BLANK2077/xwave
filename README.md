@@ -49,7 +49,7 @@ xwave 是基于 Synopsys NPI 的 FSDB 波形命令行查询工具。无需启动
 ## 环境依赖
 
 - Linux 64 位
-- GCC 支持 C++11，且需支持 libstdc++ new C++11 ABI (`std::__cxx11::basic_string`)
+- GCC 支持 C++11，且需和所用 Verdi/NPI 库的 libstdc++ ABI 匹配
 - Synopsys Verdi（需正确设置 `VERDI_HOME` 环境变量）
 
 ### 已验证工具版本
@@ -63,12 +63,15 @@ xwave 是基于 Synopsys NPI 的 FSDB 波形命令行查询工具。无需启动
 - `xwave` 链接 Synopsys NPI L1 FSDB C++ API，例如
   `npi_fsdb_sig_value_at(..., std::string&, ...)`。该符号需要和
   `libnpiL1.so` 使用相同的 C++ ABI。
+- Verdi 2020 系列的 NPI 库可使用 GCC 4.8 直接编译通过。
+- Verdi 2023 系列的 NPI 库导出 `std::__cxx11::basic_string` new ABI 符号，
+  需要使用 GCC 5+。
 - 如果链接时报
   `undefined reference to npi_fsdb_sig_value_at(... std::string& ...)`，
   先检查 `libnpiL1.so` 导出的符号是否带
   `std::__cxx11::basic_string`。若是，则编译 `xwave` 的 g++ 也必须生成
   new ABI 符号。
-- 建议使用 GCC 5+，已验证 GCC `8.5.0` 可正常编译。不要使用
+- Verdi 2023 环境下建议使用 GCC 5+，已验证 GCC `8.5.0` 可正常编译。不要使用
   `-D_GLIBCXX_USE_CXX11_ABI=0`；如果环境里默认 g++ 太老，即使显式加
   `-D_GLIBCXX_USE_CXX11_ABI=1` 也可能仍生成旧 ABI 符号。
 - 使用 VCS 编译测试波形时，本机需要设置 `VCS_TARGET_ARCH=linux64`。
