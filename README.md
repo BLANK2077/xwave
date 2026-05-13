@@ -49,8 +49,29 @@ xwave 是基于 Synopsys NPI 的 FSDB 波形命令行查询工具。无需启动
 ## 环境依赖
 
 - Linux 64 位
-- GCC 支持 C++11
+- GCC 支持 C++11，且需支持 libstdc++ new C++11 ABI (`std::__cxx11::basic_string`)
 - Synopsys Verdi（需正确设置 `VERDI_HOME` 环境变量）
+
+### 已验证工具版本
+
+- Verdi: `V-2023.12-SP1-1` / `V-2023.12-SP2`
+- VCS: `V-2023.12-SP2_Full64`
+- G++: GCC `8.5.0`
+
+说明：
+
+- `xwave` 链接 Synopsys NPI L1 FSDB C++ API，例如
+  `npi_fsdb_sig_value_at(..., std::string&, ...)`。该符号需要和
+  `libnpiL1.so` 使用相同的 C++ ABI。
+- 如果链接时报
+  `undefined reference to npi_fsdb_sig_value_at(... std::string& ...)`，
+  先检查 `libnpiL1.so` 导出的符号是否带
+  `std::__cxx11::basic_string`。若是，则编译 `xwave` 的 g++ 也必须生成
+  new ABI 符号。
+- 建议使用 GCC 5+，已验证 GCC `8.5.0` 可正常编译。不要使用
+  `-D_GLIBCXX_USE_CXX11_ABI=0`；如果环境里默认 g++ 太老，即使显式加
+  `-D_GLIBCXX_USE_CXX11_ABI=1` 也可能仍生成旧 ABI 符号。
+- 使用 VCS 编译测试波形时，本机需要设置 `VCS_TARGET_ARCH=linux64`。
 
 推荐用 `tools/xwave-env` 脚本代替直接调用 `xwave`——它会自动设置 `LD_LIBRARY_PATH`：
 
