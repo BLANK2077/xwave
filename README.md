@@ -1,30 +1,32 @@
+English | [中文](README.zh.md)
+
 # xwave
 
-xwave 是基于 Synopsys NPI 的 FSDB 波形命令行查询工具。无需启动 Verdi 即可在命令行查询信号值、管理信号列表、定位波形差异、统计分析 APB/AXI 接口事务、按表达式查询 valid/ready/backpressure 通用事件。
+xwave is a Synopsys NPI based FSDB waveform query CLI. It lets you query signal values, manage signal lists, locate waveform differences, analyze APB/AXI transactions, and query valid/ready/backpressure style events from the command line without starting the Verdi GUI.
 
-同一二进制文件 `xwave` 既是 CLI 客户端也是后台 Daemon（通过 Unix Domain Socket 通信）。
-
----
-
-## 特性
-
-- **单二进制双模式**：同一个可执行文件既是 CLI 客户端，也是后台 Daemon 服务端（通过 `--server` 启动）
-- **多 Session 管理**：每个 Session 独立加载一个 FSDB 文件，拥有独立的 NPI 上下文和 Unix Domain Socket
-- **FSDB 变动自恢复**：Session 记录 FSDB fingerprint；文件被替换或更新后，下次访问会自动重启对应 daemon
-- **信号单点查询**：`xwave value <signal> <time>`，支持十六进制（默认）、二进制、十进制
-- **信号列表追踪**：创建/删除/查看 List，批量查询 List 内所有信号在某一时刻的值，支持 JSON 输出
-- **Scope 信号发现**：`xwave scope <path>` 列出 FSDB 中指定层级下的信号名
-- **波形差异定位**：`xwave list diff`，查找 List 中信号不全相等的最早时间点
-- **APB 接口统计**：加载 APB JSON 配置后，可统计读写次数、按地址/序号/最后一次查询，支持游标式遍历
-- **AXI 接口统计**：加载 AXI JSON 配置后，可统计读写事务、按地址/ID 过滤，以及延迟和 outstanding 分析
-- **通用事件查询**：加载 event JSON 配置后，按时钟边沿采样 valid/ready/backpressure 风格接口，支持表达式过滤
-- **时间单位后缀**：所有时间输入默认单位为 `ns`，支持 `us`、`ns`、`ps`、`fs` 后缀
+The same `xwave` binary works as both the CLI client and the background daemon server. Client and server communicate through Unix domain sockets.
 
 ---
 
-## 架构概览
+## Features
 
-```
+- **Single binary, two modes**: the same executable works as the CLI client and as the daemon server started through `--server`.
+- **Multi-session management**: each session loads one FSDB file with an independent NPI context and Unix domain socket.
+- **FSDB change recovery**: sessions record an FSDB fingerprint. If the FSDB is replaced or updated, the next access automatically restarts the daemon.
+- **Single signal value query**: `xwave value <signal> <time>` supports hexadecimal by default, plus binary and decimal output.
+- **Signal lists**: create, delete, inspect, and batch-query signal lists, with JSON output support.
+- **Scope signal discovery**: `xwave scope <path>` lists FSDB signal names under a given hierarchy.
+- **Waveform difference search**: `xwave list diff` finds the earliest time when list signals are not all equal.
+- **APB analysis**: load an APB JSON config, count reads/writes, query by address/index/latest transaction, and iterate with cursors.
+- **AXI analysis**: load an AXI JSON config, query read/write transactions by address or ID, and analyze latency/outstanding behavior.
+- **Generic event query**: load an event JSON config and sample valid/ready/backpressure style interfaces on clock edges with expression filters.
+- **Time suffixes**: all time inputs default to `ns`; `us`, `ns`, `ps`, and `fs` suffixes are supported.
+
+---
+
+## Architecture
+
+```text
 ┌─────────────┐      Unix Domain Socket       ┌─────────────────┐
 │   xwave     │  <=========================>  │  xwave --server │
 │  (client)   │      TEXT protocol            │   (daemon)      │
@@ -37,129 +39,120 @@ xwave 是基于 Synopsys NPI 的 FSDB 波形命令行查询工具。无需启动
                                                └─────────┘
 ```
 
-- **Client**：处理命令行解析、Session 注册表管理、List/APB/AXI/Event 配置本地持久化
-- **Server**：每个 Session fork 出一个 Daemon，加载 FSDB，通过 NPI 读取信号值
-- **Protocol**：基于 Unix Domain Socket 的轻量级文本协议
-- **Registry**：
-  - `~/.xwave.registry` — Session 持久化记录
-  - `~/.xwave.lists` — 各 Session 下的信号 List 持久化记录
+- **Client**: parses CLI arguments, manages the session registry, and persists local List/APB/AXI/Event configurations.
+- **Server**: forks one daemon per session, loads FSDB, and reads signal values through NPI.
+- **Protocol**: lightweight text protocol over Unix domain sockets.
+- **Registry**:
+  - `~/.xwave.registry`: persistent session records.
+  - `~/.xwave.lists`: persistent signal lists for sessions.
 
 ---
 
-## 环境依赖
+## Environment Requirements
 
-- Linux 64 位
-- GCC 支持 C++11，且需和所用 Verdi/NPI 库的 libstdc++ ABI 匹配
-- Synopsys Verdi（需正确设置 `VERDI_HOME` 环境变量）
+- Linux 64-bit.
+- GCC with C++11 support and a libstdc++ ABI compatible with the selected Verdi/NPI libraries.
+- Synopsys Verdi with `VERDI_HOME` set correctly.
 
-### 已验证工具版本
+### Tested Tool Versions
 
 - Verdi: `V-2023.12-SP1-1` / `V-2023.12-SP2`
 - VCS: `V-2023.12-SP2_Full64`
 - G++: GCC `8.5.0`
 
-说明：
+Notes:
 
-- `xwave` 链接 Synopsys NPI L1 FSDB C++ API，例如
-  `npi_fsdb_sig_value_at(..., std::string&, ...)`。该符号需要和
-  `libnpiL1.so` 使用相同的 C++ ABI。
-- Verdi 2020 系列的 NPI 库可使用 GCC 4.8 直接编译通过。
-- Verdi 2023 系列的 NPI 库导出 `std::__cxx11::basic_string` new ABI 符号，
-  需要使用 GCC 5+。
-- 如果链接时报
-  `undefined reference to npi_fsdb_sig_value_at(... std::string& ...)`，
-  先检查 `libnpiL1.so` 导出的符号是否带
-  `std::__cxx11::basic_string`。若是，则编译 `xwave` 的 g++ 也必须生成
-  new ABI 符号。
-- Verdi 2023 环境下建议使用 GCC 5+，已验证 GCC `8.5.0` 可正常编译。不要使用
-  `-D_GLIBCXX_USE_CXX11_ABI=0`；如果环境里默认 g++ 太老，即使显式加
-  `-D_GLIBCXX_USE_CXX11_ABI=1` 也可能仍生成旧 ABI 符号。
-- 使用 VCS 编译测试波形时，本机需要设置 `VCS_TARGET_ARCH=linux64`。
+- xwave links Synopsys NPI L1 FSDB C++ APIs such as `npi_fsdb_sig_value_at(..., std::string&, ...)`; the symbol must use the same C++ ABI as `libnpiL1.so`.
+- Verdi 2020 NPI libraries can be built directly with GCC 4.8.
+- Verdi 2023 NPI libraries export new-ABI symbols such as `std::__cxx11::basic_string`, so GCC 5+ is required.
+- If linking fails with `undefined reference to npi_fsdb_sig_value_at(... std::string& ...)`, first check whether `libnpiL1.so` exports a symbol containing `std::__cxx11::basic_string`. If it does, the g++ used to build xwave must also generate new-ABI symbols.
+- In Verdi 2023 environments, use GCC 5+; GCC `8.5.0` has been verified. Do not use `-D_GLIBCXX_USE_CXX11_ABI=0`. If the default g++ is too old, explicitly adding `-D_GLIBCXX_USE_CXX11_ABI=1` may still generate old-ABI symbols.
+- Building test waveforms with VCS on this machine requires `VCS_TARGET_ARCH=linux64`.
 
-推荐用 `tools/xwave-env` 脚本代替直接调用 `xwave`——它会自动设置 `LD_LIBRARY_PATH`：
+Prefer the `tools/xwave-env` wrapper over direct `xwave` invocation. It sets `LD_LIBRARY_PATH` automatically:
 
 ```bash
-tools/xwave-env <子命令> ...
+tools/xwave-env <subcommand> ...
 ```
 
 ---
 
-## 编译
+## Build
 
 ```bash
 make clean && make
 ```
 
-编译成功后，当前目录生成 `xwave` 可执行文件。
+After a successful build, the `xwave` executable is generated in the repository root.
 
 ---
 
-## 快速开始
+## Quick Start
 
-### 1. 打开 FSDB
+### 1. Open an FSDB
 
 ```bash
 tools/xwave-env open /path/to/your.fsdb
 ```
 
-输出示例：
+Example output:
 
-```
+```text
 [Session 1] Ready (FSDB: 0 ~ 200000)
 [Session 1] FSDB opened: /path/to/your.fsdb
 ```
 
-### 2. 查询单个信号值
+### 2. Query a Single Signal Value
 
 ```bash
-# 默认十六进制
+# Hexadecimal by default.
 tools/xwave-env value test_top.clk 10ns
 
-# 二进制
+# Binary.
 tools/xwave-env value test_top.clk 10ns -b
 
-# 十进制
+# Decimal.
 tools/xwave-env value test_top.clk 10ns -d
 ```
 
-### 3. 信号列表（List）管理
+### 3. Signal List Management
 
 ```bash
-# 创建 List
+# Create a list.
 tools/xwave-env list new my_signals
 
-# 添加信号
+# Add signals.
 tools/xwave-env list add test_top.clk -l my_signals
 tools/xwave-env list add test_top.rst_n -l my_signals
 
-# 查看 List
+# Show a list.
 tools/xwave-env list show -l my_signals
 
-# 批量查询
+# Batch query.
 tools/xwave-env list value 15ns -l my_signals
 tools/xwave-env list value 15ns -l my_signals -d -json
 
-# 校验 List 中信号是否存在
+# Validate signals in the list.
 tools/xwave-env list validate -l my_signals
 ```
 
-`list add` 会先校验信号是否存在；`list value` 遇到旧 List 中的无效信号会输出 `NOT_FOUND` 并返回非零。若不指定 `-l <name>`，默认操作该 Session 下最近被修改的 List。
+`list add` validates signal existence before insertion. `list value` prints `NOT_FOUND` and returns non-zero for invalid signals in old lists. If `-l <name>` is omitted, xwave uses the most recently modified list for the current session.
 
-### 4. 波形差异定位
+### 4. Waveform Difference Search
 
 ```bash
-# 从 FSDB 起始到结束
+# Search from FSDB start to end.
 tools/xwave-env list diff -l my_signals
 
-# 指定时间范围
+# Search a time range.
 tools/xwave-env list diff -l my_signals -b 5ns -e 50ns
 ```
 
-`list diff` 至少需要 2 个信号。
+`list diff` requires at least two signals.
 
-### 5. APB 接口统计
+### 5. APB Analysis
 
-准备 `apb.json` 配置文件：
+Prepare an `apb.json` config:
 
 ```json
 {
@@ -176,24 +169,24 @@ tools/xwave-env list diff -l my_signals -b 5ns -e 50ns
 ```
 
 ```bash
-# 加载配置
+# Load config.
 tools/xwave-env apb apb.json -n my_apb
 
-# 统计读写次数
+# Count reads/writes.
 tools/xwave-env apb wr -n my_apb
 tools/xwave-env apb rd -n my_apb
 
-# 按地址过滤
+# Filter by address.
 tools/xwave-env apb wr -n my_apb -addr 0x100 -num 3 -json
 
-# 游标遍历
+# Cursor iteration.
 tools/xwave-env apb begin -n my_apb -wr -json
 tools/xwave-env apb next -n my_apb -wr -json
 ```
 
-### 6. AXI 接口统计
+### 6. AXI Analysis
 
-加载 AXI JSON 配置后，可统计读写事务、按地址/ID 过滤，以及延迟和 outstanding 分析：
+After loading an AXI JSON config, xwave can query read/write transactions, filter by address or ID, and analyze latency/outstanding behavior:
 
 ```bash
 tools/xwave-env axi axi_cfg.json -n my_axi
@@ -203,11 +196,11 @@ tools/xwave-env axi latency -n my_axi -rd -json
 tools/xwave-env axi osd -n my_axi -wr -json
 ```
 
-### 7. 通用事件查询
+### 7. Generic Event Query
 
-适用于 valid/ready/backpressure 风格接口，按时钟边沿采样并对表达式求值。加载后的 event 配置会绑定到当前 Session 的 FSDB，避免复用旧 session id 时误用其他波形的配置。
+Generic event query is intended for valid/ready/backpressure style interfaces. It samples on clock edges and evaluates expressions. Loaded event configs are bound to the current session FSDB, preventing accidental reuse when an old session ID points to another waveform.
 
-准备 `if0.event.json` 配置文件：
+Prepare an `if0.event.json` config:
 
 ```json
 {
@@ -235,114 +228,114 @@ tools/xwave-env event find -n if0 -expr "vld && rdy && data != 0" -json
 tools/xwave-env event find -n if0 -expr "vld && !bp" -context 200ns -axi axi0 -apb apb0 -json
 ```
 
-表达式支持：信号别名、字段别名、`&&`、`||`、`!`、括号、`==`、`!=`，以及二进制/十六进制/十进制常量。
+Expressions support signal aliases, field aliases, `&&`, `||`, `!`, parentheses, `==`, `!=`, and binary/hex/decimal constants.
 
-配置校验规则：
+Validation rules:
 
-- `edge` 只能是 `posedge` 或 `negedge`，省略时默认为 `posedge`
-- `fields` 位段必须是合法非负整数，且引用已定义的 `signals` alias
-- 表达式会在扫描波形前先做语法和 alias 校验，即使时间窗口内没有事件也会报告坏表达式
-- 含 `x/z` 的布尔值或比较结果为 unknown，最终不会被当作匹配事件
-- `event export` 未显式指定 `-limit` 时默认最多导出 1000 条；需要全量导出时显式传入非正 limit
-- `-context <T>` 可搭配 `-axi <name>`、`-apb <name>` 或二者同时使用，在每条 event 命中点前后 `T` 时间窗口内附带协议事务上下文
+- `edge` must be `posedge` or `negedge`; omitted `edge` defaults to `posedge`.
+- `fields` bit ranges must be valid non-negative integers and must reference aliases in `signals`.
+- Expressions are parsed and alias-checked before waveform scanning, so invalid expressions are reported even if the time window contains no events.
+- Boolean values or comparisons containing `x/z` are treated as unknown and are not counted as matching events.
+- `event export` defaults to at most 1000 rows unless `-limit` is explicitly set. Use a non-positive limit for full export.
+- `-context <T>` can be combined with `-axi <name>`, `-apb <name>`, or both to attach protocol transaction context around each event hit.
 
-### 8. Scope 信号发现
+### 8. Scope Signal Discovery
 
 ```bash
 tools/xwave-env scope xring_tb_top.u_dut.u_pkt_fetch
 tools/xwave-env scope xring_tb_top.u_dut.u_pkt_fetch -recursive -json
 ```
 
-用于确认 FSDB 中真实信号路径，尤其适合排查 SystemVerilog 数组或 generate scope 在 VCS FSDB 中的命名。
+Use this to confirm real FSDB signal paths, especially for SystemVerilog arrays or generated scopes whose names may differ in VCS FSDB output.
 
-### 9. Session 管理
+### 9. Session Management
 
 ```bash
-tools/xwave-env session list                # 列出所有 Session
-tools/xwave-env session doctor -s 1         # 诊断健康状态
-tools/xwave-env session doctor -s 1 -json   # JSON 格式诊断
-tools/xwave-env session gc                  # 清理 stale/idle Session
-tools/xwave-env session kill 1              # 关闭指定 Session
-tools/xwave-env session kill all            # 关闭所有 Session
+tools/xwave-env session list                # List all sessions.
+tools/xwave-env session doctor -s 1         # Diagnose health.
+tools/xwave-env session doctor -s 1 -json   # Diagnose in JSON.
+tools/xwave-env session gc                  # Clean stale/idle sessions.
+tools/xwave-env session kill 1              # Kill one session.
+tools/xwave-env session kill all            # Kill all sessions.
 ```
 
-`open` 会规范化 FSDB 路径并复用同一文件的健康 Session。Session 记录 FSDB 的 mtime/size/dev/inode；若文件发生变化，下一次查询会提示并自动重启 daemon，保留原 Session ID 和已加载配置。
+`open` canonicalizes the FSDB path and reuses a healthy session for the same file. Sessions record FSDB mtime/size/dev/inode. If the file changes, the next query reports the change and automatically restarts the daemon while preserving the session ID and loaded configs.
 
 ---
 
-## 命令速查
+## Command Reference
 
-| 命令 | 说明 |
-|------|------|
-| `xwave open <fsdb-file>` | 打开 FSDB，创建新 Session |
-| `xwave session list` | 列出所有活跃 Session |
-| `xwave session doctor -s <sid> [-json]` | 诊断指定 Session 健康状态 |
-| `xwave session gc` | 清理 stale/idle Session |
-| `xwave session kill <id\|all>` | 关闭指定或所有 Session |
-| `xwave scope <path> [-recursive] [-json] [-s <sid>]` | 列出指定 scope 下的 FSDB 信号 |
-| `xwave value <sig> <time> [-b\|-d] [-s <sid>]` | 单信号值查询 |
-| `xwave list new <name> [-s <sid>]` | 创建新 List |
-| `xwave list add <sig> [-s <sid>] [-l <name>]` | 向 List 添加信号 |
-| `xwave list del <sig\|idx> [-s <sid>] [-l <name>]` | 从 List 删除信号 |
-| `xwave list show [-s <sid>] [-l <name>]` | 显示 List 内容 |
-| `xwave list value <time> [-l <name>] [-b\|-d] [-json] [-s <sid>]` | 批量查询 List 值 |
-| `xwave list validate [-l <name>] [-json] [-s <sid>]` | 校验 List 中信号是否存在 |
-| `xwave list diff [-l <name>] [-b T] [-e T] [-s <sid>]` | 查找最早差异时间 |
-| `xwave apb <json> -n <name> [-s <sid>]` | 加载 APB 配置 |
-| `xwave apb list [-n <name>] [-s <sid>]` | 查看 APB 配置 |
-| `xwave apb wr\|rd [-n <name>] [-addr <a>] [-num <x>] [-last] [-json] [-s <sid>]` | APB 读写统计/查询 |
-| `xwave apb begin\|next\|pre\|last [-rd\|-wr] [-json] [-n <name>] [-s <sid>]` | APB 游标遍历 |
-| `xwave axi <json> -n <name> [-s <sid>]` | 加载 AXI 配置 |
-| `xwave axi list [-n <name>] [-s <sid>]` | 查看 AXI 配置 |
-| `xwave axi wr\|rd [-n <name>] [-addr <a>] [-id <id>] [-num <x>] [-last] [-json] [-s <sid>]` | AXI 读写统计/查询 |
-| `xwave axi begin\|next\|pre\|last [-rd\|-wr] [-json] [-n <name>] [-s <sid>]` | AXI 游标遍历 |
-| `xwave axi latency\|osd [-rd\|-wr\|-all] [-id <id>] [-json] [-n <name>] [-s <sid>]` | AXI 延迟/outstanding 分析 |
-| `xwave event <json> -n <name> [-s <sid>]` | 加载通用事件配置 |
-| `xwave event list [-n <name>] [-s <sid>]` | 查看通用事件配置 |
-| `xwave event find -n <name> -expr <expr> [-b T] [-e T] [-context T [-axi <axi>] [-apb <apb>]] [-json] [-s <sid>]` | 查找第一个匹配事件，可附带 AXI/APB 上下文 |
-| `xwave event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-context T [-axi <axi>] [-apb <apb>]] [-json] [-s <sid>]` | 导出事件表，默认最多 1000 条，可附带 AXI/APB 上下文 |
+| Command | Description |
+|---|---|
+| `xwave open <fsdb-file>` | Open an FSDB and create a session |
+| `xwave session list` | List all active sessions |
+| `xwave session doctor -s <sid> [-json]` | Diagnose a session |
+| `xwave session gc` | Clean stale/idle sessions |
+| `xwave session kill <id\|all>` | Kill one or all sessions |
+| `xwave scope <path> [-recursive] [-json] [-s <sid>]` | List FSDB signals under a scope |
+| `xwave value <sig> <time> [-b\|-d] [-s <sid>]` | Query one signal value |
+| `xwave list new <name> [-s <sid>]` | Create a list |
+| `xwave list add <sig> [-s <sid>] [-l <name>]` | Add a signal to a list |
+| `xwave list del <sig\|idx> [-s <sid>] [-l <name>]` | Delete a signal from a list |
+| `xwave list show [-s <sid>] [-l <name>]` | Show list contents |
+| `xwave list value <time> [-l <name>] [-b\|-d] [-json] [-s <sid>]` | Batch-query list values |
+| `xwave list validate [-l <name>] [-json] [-s <sid>]` | Validate list signals |
+| `xwave list diff [-l <name>] [-b T] [-e T] [-s <sid>]` | Find the earliest difference time |
+| `xwave apb <json> -n <name> [-s <sid>]` | Load an APB config |
+| `xwave apb list [-n <name>] [-s <sid>]` | Show APB configs |
+| `xwave apb wr\|rd [-n <name>] [-addr <a>] [-num <x>] [-last] [-json] [-s <sid>]` | APB read/write query |
+| `xwave apb begin\|next\|pre\|last [-rd\|-wr] [-json] [-n <name>] [-s <sid>]` | APB cursor iteration |
+| `xwave axi <json> -n <name> [-s <sid>]` | Load an AXI config |
+| `xwave axi list [-n <name>] [-s <sid>]` | Show AXI configs |
+| `xwave axi wr\|rd [-n <name>] [-addr <a>] [-id <id>] [-num <x>] [-last] [-json] [-s <sid>]` | AXI read/write query |
+| `xwave axi begin\|next\|pre\|last [-rd\|-wr] [-json] [-n <name>] [-s <sid>]` | AXI cursor iteration |
+| `xwave axi latency\|osd [-rd\|-wr\|-all] [-id <id>] [-json] [-n <name>] [-s <sid>]` | AXI latency/outstanding analysis |
+| `xwave event <json> -n <name> [-s <sid>]` | Load a generic event config |
+| `xwave event list [-n <name>] [-s <sid>]` | Show generic event configs |
+| `xwave event find -n <name> -expr <expr> [-b T] [-e T] [-context T [-axi <axi>] [-apb <apb>]] [-json] [-s <sid>]` | Find the first matching event, optionally with AXI/APB context |
+| `xwave event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-context T [-axi <axi>] [-apb <apb>]] [-json] [-s <sid>]` | Export an event table, default max 1000 rows, optionally with AXI/APB context |
 
 ---
 
-## 项目结构
+## Project Layout
 
-```
+```text
 xwave/
-├── xwave                    # 主可执行文件（编译生成）
-├── Makefile                 # 编译脚本
+├── xwave                    # Main executable generated by build
+├── Makefile                 # Build script
 ├── README.md
 ├── tools/
-│   └── xwave-env            # 环境启动脚本（自动设置 LD_LIBRARY_PATH）
+│   └── xwave-env            # Environment wrapper that sets LD_LIBRARY_PATH
 └── src/
-    ├── main.cpp             # CLI 入口
-    ├── json.hpp             # nlohmann/json 单头文件
+    ├── main.cpp             # CLI entry point
+    ├── json.hpp             # nlohmann/json single header
     ├── protocol/
-    │   └── protocol.h       # 协议常量定义
+    │   └── protocol.h       # Protocol constants
     ├── session/
     │   ├── session_registry.h/.cpp
     │   └── session_manager.h/.cpp
     ├── client/
-    │   └── client.h/.cpp    # Unix Socket 客户端通信
+    │   └── client.h/.cpp    # Unix socket client communication
     ├── server/
-    │   ├── server.h/.cpp    # Daemon 主循环与命令分发
-    │   └── fsdb_value_reader.h/.cpp  # NPI FSDB 读值封装
+    │   ├── server.h/.cpp    # Daemon loop and command dispatch
+    │   └── fsdb_value_reader.h/.cpp  # NPI FSDB value reader wrapper
     ├── list/
     │   ├── signal_list.h
-    │   └── list_manager.h/.cpp  # List 持久化管理
+    │   └── list_manager.h/.cpp  # Persistent list management
     ├── apb/
     │   ├── apb_config.h
-    │   ├── apb_manager.h/.cpp   # APB 配置持久化管理
-    │   └── apb_analyzer.h/.cpp  # APB FSDB 分析器
+    │   ├── apb_manager.h/.cpp   # Persistent APB config management
+    │   └── apb_analyzer.h/.cpp  # APB FSDB analyzer
     ├── axi/
     │   ├── axi_config.h
-    │   ├── axi_manager.h/.cpp   # AXI 配置持久化管理
-    │   └── axi_analyzer.h/.cpp  # AXI FSDB 分析器
+    │   ├── axi_manager.h/.cpp   # Persistent AXI config management
+    │   └── axi_analyzer.h/.cpp  # AXI FSDB analyzer
     ├── event/
     │   ├── event_config.h
-    │   ├── event_manager.h/.cpp    # 通用事件配置持久化管理
-    │   └── event_analyzer.h/.cpp   # 通用事件 FSDB 分析器
+    │   ├── event_manager.h/.cpp    # Persistent generic event config management
+    │   └── event_analyzer.h/.cpp   # Generic event FSDB analyzer
     ├── common/
-    │   └── time_parser.h/.cpp  # 时间字符串解析
+    │   └── time_parser.h/.cpp  # Time string parser
     └── commands/
         ├── cmd_session.h/.cpp
         ├── cmd_value.h/.cpp
@@ -354,12 +347,12 @@ xwave/
 
 ---
 
-## 注意事项
+## Notes
 
-- 信号路径需与 FSDB 中的层级完全一致（例如 `test_top.u_data_gen.cnt_a`）
-- 不指定 `-s` 时自动用最新 Session；不指定 `-l`/`-n` 时自动用最近修改的列表/配置
-- `list diff` 需至少 2 个信号
-- Session 以后台 daemon 运行，终端关闭不影响；用 `session kill` 或 `session gc` 清理
-- 默认 idle timeout 为 1800 秒，可通过 `XWAVE_IDLE_TIMEOUT_SEC` 覆盖
-- 默认输出为十六进制，格式为 `'h...`
-- event 配置按 `Session + FSDB` 绑定；旧版 `.xwave.events` 记录缺少 FSDB 元数据，不会被自动复用，重新执行 `xwave event <json> -n <name>` 即可迁移
+- Signal paths must exactly match the hierarchy stored in the FSDB, for example `test_top.u_data_gen.cnt_a`.
+- If `-s` is omitted, xwave uses the latest session. If `-l` / `-n` is omitted, it uses the most recently modified list/config.
+- `list diff` requires at least two signals.
+- Sessions run as background daemons and survive terminal exits. Use `session kill` or `session gc` to clean them.
+- The default idle timeout is 1800 seconds and can be overridden with `XWAVE_IDLE_TIMEOUT_SEC`.
+- Default value output is hexadecimal and formatted as `'h...`.
+- Event configs are bound by `Session + FSDB`. Old `.xwave.events` records without FSDB metadata are not automatically reused; rerun `xwave event <json> -n <name>` to migrate them.
