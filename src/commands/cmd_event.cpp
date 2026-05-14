@@ -1,7 +1,6 @@
 #include "cmd_event.h"
 #include "cmd_session.h"
 #include "../client/client.h"
-#include "../common/time_parser.h"
 #include "../event/event_manager.h"
 #include "../json.hpp"
 #include "../protocol/protocol.h"
@@ -38,7 +37,7 @@ static bool parse_nonnegative_int(const std::string& text, int& value) {
     return true;
 }
 
-static bool parse_nonnegative_time_arg(const char* text, npiFsdbTime& value) {
+static bool parse_nonnegative_time_arg(const char* text, unsigned long long& value) {
     if (!text || text[0] == '\0' || text[0] == '-') return false;
     char* end = nullptr;
     errno = 0;
@@ -54,7 +53,7 @@ static bool parse_nonnegative_time_arg(const char* text, npiFsdbTime& value) {
         else if (strcasecmp(end, "fs") == 0) multiplier = 0.001;
         else return false;
     }
-    value = static_cast<npiFsdbTime>(parsed * multiplier);
+    value = static_cast<unsigned long long>(parsed * multiplier);
     return true;
 }
 
@@ -294,7 +293,7 @@ int cmd_event(int argc, char** argv) {
     bool limit_specified = false;
     bool json = false;
     bool context_specified = false;
-    npiFsdbTime context = 0;
+    const char* context_str = nullptr;
     const char* axi_name = nullptr;
     const char* apb_name = nullptr;
 
@@ -305,7 +304,9 @@ int cmd_event(int argc, char** argv) {
         else if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) begin_str = argv[++i];
         else if (strcmp(argv[i], "-e") == 0 && i + 1 < argc) end_str = argv[++i];
         else if (strcmp(argv[i], "-context") == 0 && i + 1 < argc) {
-            if (!parse_nonnegative_time_arg(argv[++i], context)) {
+            context_str = argv[++i];
+            unsigned long long parsed_context = 0;
+            if (!parse_nonnegative_time_arg(context_str, parsed_context)) {
                 fprintf(stderr, "Error: -context requires a non-negative time\n");
                 return 1;
             }
@@ -342,8 +343,6 @@ int cmd_event(int argc, char** argv) {
     std::string event_name;
     if (!resolve_event_name(em, session_id, session.fsdb_file, name, event_name)) return 1;
 
-    npiFsdbTime begin = begin_str ? parse_time_string(begin_str) : 0;
-    npiFsdbTime end = end_str ? parse_time_string(end_str) : 0xFFFFFFFFFFFFFFFFULL;
     if (strcmp(subcmd, "find") == 0) limit = 1;
     else if (!limit_specified) limit = 1000;
 
@@ -357,12 +356,12 @@ int cmd_event(int argc, char** argv) {
 
     std::string protocol_cmd = std::string(protocol_name);
     protocol_cmd += " " + event_name;
-    protocol_cmd += " " + std::to_string(begin);
-    protocol_cmd += " " + std::to_string(end);
+    protocol_cmd += " " + std::string(begin_str ? begin_str : "0");
+    protocol_cmd += " " + std::string(end_str ? end_str : "max");
     protocol_cmd += " " + std::to_string(limit);
     protocol_cmd += json ? " json" : " text";
     if (use_context) {
-        protocol_cmd += " " + std::to_string(context);
+        protocol_cmd += " " + std::string(context_str ? context_str : "0");
         protocol_cmd += " " + std::string(axi_name ? axi_name : "-");
         protocol_cmd += " " + std::string(apb_name ? apb_name : "-");
     }

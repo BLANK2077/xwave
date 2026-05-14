@@ -4,7 +4,6 @@
 #include "../session/session_manager.h"
 #include "../protocol/protocol.h"
 #include "../list/list_manager.h"
-#include "../common/time_parser.h"
 #include <cstdio>
 #include <cstring>
 
@@ -226,8 +225,7 @@ int cmd_list(int argc, char** argv) {
         std::string name;
         if (!resolve_list_name(lm, session_id, list_name, name)) return 1;
 
-        npiFsdbTime t = parse_time_string(time_str);
-        std::string cmd = std::string(CMD_LIST_VALUE) + " " + name + " " + std::to_string(t) + " " + fmt;
+        std::string cmd = std::string(CMD_LIST_VALUE) + " " + name + " " + time_str + " " + fmt;
         if (json) cmd += " json";
         if (!send_command_and_print(session_id, cmd.c_str())) {
             return 1;
@@ -256,12 +254,9 @@ int cmd_list(int argc, char** argv) {
         std::string name;
         if (!resolve_list_name(lm, session_id, list_name, name)) return 1;
 
-        npiFsdbTime begin = 0;
-        npiFsdbTime end = 0xFFFFFFFFFFFFFFFFULL;
-        if (begin_time_str) begin = parse_time_string(begin_time_str);
-        if (end_time_str) end = parse_time_string(end_time_str);
-
-        std::string cmd = std::string(CMD_LIST_DIFF) + " " + name + " " + std::to_string(begin) + " " + std::to_string(end);
+        std::string cmd = std::string(CMD_LIST_DIFF) + " " + name + " "
+                        + (begin_time_str ? begin_time_str : "0") + " "
+                        + (end_time_str ? end_time_str : "max");
         if (!send_command_and_print(session_id, cmd.c_str())) {
             return 1;
         }

@@ -3,7 +3,6 @@
 #include "../client/client.h"
 #include "../session/session_manager.h"
 #include "../protocol/protocol.h"
-#include "../common/time_parser.h"
 #include <cstdio>
 #include <cstring>
 
@@ -46,9 +45,7 @@ int cmd_value(int argc, char** argv) {
         }
     }
 
-    npiFsdbTime t = parse_time_string(time_str);
-
-    std::string cmd = std::string(CMD_VALUE) + " " + signal + " " + std::to_string(t) + " " + fmt;
+    std::string cmd = std::string(CMD_VALUE) + " " + signal + " " + time_str + " " + fmt;
     if (!send_command_and_print(session_id, cmd.c_str())) {
         return 1;
     }

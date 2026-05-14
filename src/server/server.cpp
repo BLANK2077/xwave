@@ -25,6 +25,9 @@
 #include <cctype>
 #include <cstdint>
 #include <ctime>
+#include <cerrno>
+#include <cmath>
+#include <strings.h>
 
 // NPI headers
 #include "npi.h"
@@ -115,6 +118,66 @@ static bool fsdb_changed() {
            dev != g_fsdb_dev || inode != g_fsdb_inode;
 }
 
+static void send_error(int client_fd, const std::string& message) {
+    std::string err = std::string(ERROR_PREFIX) + message + "\n" + END_MARKER;
+    send_all(client_fd, err.c_str(), err.length());
+}
+
+static std::string fsdb_time_scale() {
+    const char* scale = g_fsdb_file ? npi_fsdb_time_scale_unit(g_fsdb_file) : nullptr;
+    return scale ? scale : "unknown";
+}
+
+static bool parse_user_time(const char* text,
+                            bool allow_max,
+                            npiFsdbTime& out_time,
+                            std::string& error) {
+    if (!text || text[0] == '\0') {
+        error = "Invalid time: empty";
+        return false;
+    }
+    if (allow_max && (strcasecmp(text, "max") == 0 || strcasecmp(text, "inf") == 0)) {
+        out_time = 0xFFFFFFFFFFFFFFFFULL;
+        return true;
+    }
+    if (text[0] == '-') {
+        error = std::string("Invalid time '") + text + "': negative time is not allowed";
+        return false;
+    }
+
+    char* end = nullptr;
+    errno = 0;
+    double value = strtod(text, &end);
+    if (errno != 0 || end == text || !std::isfinite(value) || value < 0) {
+        error = std::string("Invalid time '") + text + "'";
+        return false;
+    }
+    while (*end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+
+    const char* unit = "ns";
+    if (*end != '\0') {
+        if (strcasecmp(end, "us") == 0) unit = "us";
+        else if (strcasecmp(end, "ns") == 0) unit = "ns";
+        else if (strcasecmp(end, "ps") == 0) unit = "ps";
+        else if (strcasecmp(end, "fs") == 0) unit = "fs";
+        else {
+            error = std::string("Invalid time '") + text
+                  + "': unsupported unit, expected us/ns/ps/fs (FSDB scale "
+                  + fsdb_time_scale() + ")";
+            return false;
+        }
+    }
+
+    npiFsdbTime converted = 0;
+    if (!g_fsdb_file || !npi_fsdb_convert_time_in(g_fsdb_file, value, unit, converted)) {
+        error = std::string("Failed to convert time '") + text
+              + "' for FSDB scale " + fsdb_time_scale();
+        return false;
+    }
+    out_time = converted;
+    return true;
+}
+
 // Helper: read a signal list from the registry file by session_id and list_name
 static bool read_list_from_registry(int session_id, const char* list_name, SignalList& out_list) {
     const char* home = getenv("HOME");
@@ -164,13 +227,41 @@ static bool read_list_from_registry(int session_id, const char* list_name, Signa
 }
 
 static std::string format_time(npiFsdbTime t) {
+    auto format_number = [](double value) {
+        char buf[64];
+        double rounded = std::round(value);
+        if (std::fabs(value - rounded) < 1e-9) {
+            snprintf(buf, sizeof(buf), "%.0f", rounded);
+        } else {
+            snprintf(buf, sizeof(buf), "%.6g", value);
+        }
+        return std::string(buf);
+    };
+
+    if (g_fsdb_file) {
+        double us = 0.0;
+        if (npi_fsdb_convert_time_out(g_fsdb_file, t, "us", us) && us >= 1.0 &&
+            std::fabs(us - std::round(us)) < 1e-9) {
+            return format_number(us) + "us";
+        }
+        double ns = 0.0;
+        if (npi_fsdb_convert_time_out(g_fsdb_file, t, "ns", ns) && ns >= 1.0 &&
+            std::fabs(ns - std::round(ns)) < 1e-9) {
+            return format_number(ns) + "ns";
+        }
+        double ps = 0.0;
+        if (npi_fsdb_convert_time_out(g_fsdb_file, t, "ps", ps)) {
+            return format_number(ps) + "ps";
+        }
+    }
+
     if (t % 1000000 == 0 && t >= 1000000) {
         return std::to_string(t / 1000000) + "us";
-    } else if (t % 1000 == 0 && t >= 1000) {
-        return std::to_string(t / 1000) + "ns";
-    } else {
-        return std::to_string(t) + "ps";
     }
+    if (t % 1000 == 0 && t >= 1000) {
+        return std::to_string(t / 1000) + "ns";
+    }
+    return std::to_string(t) + "ps";
 }
 
 static void handle_value(int client_fd, const char* signal_path, npiFsdbTime time, char fmt) {
@@ -1084,7 +1175,12 @@ static bool handle_client(int client_fd, bool& should_quit) {
         char time_str[64];
         char fmt;
         if (sscanf(cmd + strlen(CMD_VALUE), " %1023s %63s %c", signal_path, time_str, &fmt) == 3) {
-            npiFsdbTime t = strtoull(time_str, nullptr, 10);
+            npiFsdbTime t = 0;
+            std::string error;
+            if (!parse_user_time(time_str, false, t, error)) {
+                send_error(client_fd, error);
+                return true;
+            }
             handle_value(client_fd, signal_path, t, fmt);
         } else {
             const char* err = ERROR_PREFIX "Usage: VALUE <signal> <time> <fmt>\n" END_MARKER;
@@ -1099,7 +1195,12 @@ static bool handle_client(int client_fd, bool& should_quit) {
         char time_str[64];
         char fmt[16];
         if (sscanf(cmd + strlen(CMD_LIST_VALUE), " %255s %63s %15s", list_name, time_str, fmt) >= 3) {
-            npiFsdbTime t = strtoull(time_str, nullptr, 10);
+            npiFsdbTime t = 0;
+            std::string error;
+            if (!parse_user_time(time_str, false, t, error)) {
+                send_error(client_fd, error);
+                return true;
+            }
             bool json = (strstr(cmd, "json") != nullptr);
             handle_list_value(client_fd, list_name, t, fmt[0], json);
         } else {
@@ -1154,8 +1255,14 @@ static bool handle_client(int client_fd, bool& should_quit) {
         char begin_str[64];
         char end_str[64];
         if (sscanf(cmd + strlen(CMD_LIST_DIFF), " %255s %63s %63s", list_name, begin_str, end_str) == 3) {
-            npiFsdbTime begin = strtoull(begin_str, nullptr, 10);
-            npiFsdbTime end = strtoull(end_str, nullptr, 10);
+            npiFsdbTime begin = 0;
+            npiFsdbTime end = 0;
+            std::string error;
+            if (!parse_user_time(begin_str, false, begin, error) ||
+                !parse_user_time(end_str, true, end, error)) {
+                send_error(client_fd, error);
+                return true;
+            }
             handle_list_diff(client_fd, list_name, begin, end);
         } else {
             const char* err = ERROR_PREFIX "Usage: LIST_DIFF <list> <begin> <end>\n" END_MARKER;
@@ -1339,39 +1446,49 @@ static bool handle_client(int client_fd, bool& should_quit) {
         return true;
     }
 
-    // Handle EVENT_FIND_CTX|EVENT_EXPORT_CTX <name> <begin> <end> <limit> <json|text> <context_ps> <axi_name|-> <apb_name|-> expr <expr>
+    // Handle EVENT_FIND_CTX|EVENT_EXPORT_CTX <name> <begin> <end> <limit> <json|text> <context> <axi_name|-> <apb_name|-> expr <expr>
     if (strncmp(cmd, CMD_EVENT_FIND_CTX, strlen(CMD_EVENT_FIND_CTX)) == 0 ||
         strncmp(cmd, CMD_EVENT_EXPORT_CTX, strlen(CMD_EVENT_EXPORT_CTX)) == 0) {
         bool find = strncmp(cmd, CMD_EVENT_FIND_CTX, strlen(CMD_EVENT_FIND_CTX)) == 0;
         size_t base_len = find ? strlen(CMD_EVENT_FIND_CTX) : strlen(CMD_EVENT_EXPORT_CTX);
         char name[256] = {};
-        unsigned long long begin = 0;
-        unsigned long long end = 0;
-        unsigned long long context = 0;
+        char begin_str[64] = {};
+        char end_str[64] = {};
+        char context_str[64] = {};
         int limit = -1;
         char mode[16] = {};
         char axi_name[256] = {};
         char apb_name[256] = {};
         const char* p = cmd + base_len;
-        int matched = sscanf(p, " %255s %llu %llu %d %15s %llu %255s %255s",
-                             name, &begin, &end, &limit, mode, &context, axi_name, apb_name);
+        int matched = sscanf(p, " %255s %63s %63s %d %15s %63s %255s %255s",
+                             name, begin_str, end_str, &limit, mode, context_str, axi_name, apb_name);
         const char* expr_p = strstr(p, " expr ");
         if (matched >= 8 && expr_p) {
             expr_p += strlen(" expr ");
             bool use_json = strcmp(mode, "json") == 0;
             if (find) limit = 1;
+            npiFsdbTime begin = 0;
+            npiFsdbTime end = 0;
+            npiFsdbTime context = 0;
+            std::string error;
+            if (!parse_user_time(begin_str, false, begin, error) ||
+                !parse_user_time(end_str, true, end, error) ||
+                !parse_user_time(context_str, false, context, error)) {
+                send_error(client_fd, error);
+                return true;
+            }
             handle_event_query(client_fd,
                                name,
-                               static_cast<npiFsdbTime>(begin),
-                               static_cast<npiFsdbTime>(end),
+                               begin,
+                               end,
                                limit,
                                use_json,
                                expr_p,
                                strcmp(axi_name, "-") == 0 ? nullptr : axi_name,
                                strcmp(apb_name, "-") == 0 ? nullptr : apb_name,
-                               static_cast<npiFsdbTime>(context));
+                               context);
         } else {
-            const char* err = ERROR_PREFIX "Usage: EVENT_FIND_CTX|EVENT_EXPORT_CTX <name> <begin> <end> <limit> <json|text> <context_ps> <axi_name|-> <apb_name|-> expr <expr>\n" END_MARKER;
+            const char* err = ERROR_PREFIX "Usage: EVENT_FIND_CTX|EVENT_EXPORT_CTX <name> <begin> <end> <limit> <json|text> <context> <axi_name|-> <apb_name|-> expr <expr>\n" END_MARKER;
             send_all(client_fd, err, strlen(err));
         }
         return true;
@@ -1383,21 +1500,29 @@ static bool handle_client(int client_fd, bool& should_quit) {
         bool find = strncmp(cmd, CMD_EVENT_FIND, strlen(CMD_EVENT_FIND)) == 0;
         size_t base_len = find ? strlen(CMD_EVENT_FIND) : strlen(CMD_EVENT_EXPORT);
         char name[256] = {};
-        unsigned long long begin = 0;
-        unsigned long long end = 0;
+        char begin_str[64] = {};
+        char end_str[64] = {};
         int limit = -1;
         char mode[16] = {};
         const char* p = cmd + base_len;
-        int matched = sscanf(p, " %255s %llu %llu %d %15s", name, &begin, &end, &limit, mode);
+        int matched = sscanf(p, " %255s %63s %63s %d %15s", name, begin_str, end_str, &limit, mode);
         const char* expr_p = strstr(p, " expr ");
         if (matched >= 5 && expr_p) {
             expr_p += strlen(" expr ");
             bool use_json = strcmp(mode, "json") == 0;
             if (find) limit = 1;
+            npiFsdbTime begin = 0;
+            npiFsdbTime end = 0;
+            std::string error;
+            if (!parse_user_time(begin_str, false, begin, error) ||
+                !parse_user_time(end_str, true, end, error)) {
+                send_error(client_fd, error);
+                return true;
+            }
             handle_event_query(client_fd,
                                name,
-                               static_cast<npiFsdbTime>(begin),
-                               static_cast<npiFsdbTime>(end),
+                               begin,
+                               end,
                                limit,
                                use_json,
                                expr_p);
