@@ -339,6 +339,22 @@ tools/xwave-env session kill all            # 关闭所有 Session
 | `xwave event list [-n <name>] [-s <sid>]` | 查看通用事件配置 |
 | `xwave event find -n <name> -expr <expr> [-b T] [-e T] [-context T [-axi <axi>] [-apb <apb>]] [-json] [-s <sid>]` | 查找第一个匹配事件，可附带 AXI/APB 上下文 |
 | `xwave event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-context T [-axi <axi>] [-apb <apb>]] [-json] [-s <sid>]` | 导出事件表，默认最多 1000 条，可附带 AXI/APB 上下文 |
+| `xwave ai query <json\|-\|--json JSON>` | 运行 AI JSON 请求，统一返回 envelope |
+| `xwave ai schema` | 输出 `xwave.ai.v1` 请求 schema |
+| `xwave ai actions` | 输出 AI API action 列表 |
+
+### AI JSON 接口
+
+`xwave ai` 是给 AI Agent 和脚本使用的稳定 JSON 入口，旧 CLI 输出和行为保持不变。请求统一包含 `api_version/action/target/args/limits/output`，响应统一包含 `ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta`。
+
+```bash
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"value.at","target":{"fsdb":"waves.fsdb","auto_open":true},"args":{"signal":"top.clk","time":"10ns"}}'
+tools/xwave-env ai query -
+tools/xwave-env ai schema
+tools/xwave-env ai actions
+```
+
+当前 AI action 覆盖现有 `session/scope/value/list/apb/axi/event` 主要能力，并提供 `verify.conditions` 与 `expr.eval_at`。
 
 ---
 

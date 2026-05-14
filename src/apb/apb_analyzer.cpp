@@ -43,82 +43,135 @@ bool ApbAnalyzer::analyze(const std::string& name, npiFsdbFileHandle file, const
     npiFsdbSigHandle clk_sig = npi_fsdb_sig_by_name(file, config.clk.c_str(), NULL);
     if (!clk_sig) return false;
 
-    npiFsdbVctHandle vct = npi_fsdb_create_vct(clk_sig);
-    if (!vct) return false;
+    std::vector<std::string> signals = {
+        config.rst_n, config.psel, config.penable,
+        config.pwrite, config.paddr, config.pwdata, config.prdata
+    };
+    std::vector<npiFsdbSigHandle> sig_handles;
+    sig_handles.reserve(signals.size());
+    for (const auto& signal : signals) {
+        npiFsdbSigHandle h = npi_fsdb_sig_by_name(file, signal.c_str(), NULL);
+        if (!h) return false;
+        sig_handles.push_back(h);
+    }
 
     ApbResult result;
 
+    auto process_edge = [&](npiFsdbTime t, const std::vector<std::string>& values) {
+        if (values.size() < 7) return;
+
+        const std::string& rst_n_val = values[0];
+        const std::string& psel_val = values[1];
+        const std::string& penable_val = values[2];
+        const std::string& pwrite_val = values[3];
+        const std::string& paddr_val = values[4];
+        const std::string& pwdata_val = values[5];
+        const std::string& prdata_val = values[6];
+
+        // Check rst_n == 1
+        if (rst_n_val.empty() || rst_n_val == "0" || rst_n_val == "X" || rst_n_val == "Z") {
+            return;
+        }
+        // Check psel == 1
+        if (psel_val.empty() || psel_val == "0" || psel_val == "X" || psel_val == "Z") {
+            return;
+        }
+        // Check penable == 1
+        if (penable_val.empty() || penable_val == "0" || penable_val == "X" || penable_val == "Z") {
+            return;
+        }
+
+        bool is_write = !(pwrite_val.empty() || pwrite_val == "0" || pwrite_val == "X" || pwrite_val == "Z");
+
+        ApbTransaction txn;
+        txn.time = t;
+        txn.addr = paddr_val;
+        txn.data = is_write ? pwdata_val : prdata_val;
+        txn.is_write = is_write;
+
+        result.all.push_back(txn);
+        if (is_write) {
+            result.writes.push_back(txn);
+        } else {
+            result.reads.push_back(txn);
+        }
+    };
+
+    npiFsdbTime min_time = 0;
+    npiFsdbTime max_time = 0;
+    npi_fsdb_min_time(file, &min_time);
+    npi_fsdb_max_time(file, &max_time);
+
+    fsdbSigVec_t all_handles;
+    all_handles.push_back(clk_sig);
+    for (auto sig : sig_handles) all_handles.push_back(sig);
+
+    fsdbValVec_t init_values;
+    std::vector<std::string> values(signals.size());
     std::string prev_clk_val;
-    if (npi_fsdb_goto_first(vct)) {
-        do {
-            npiFsdbTime t;
-            npi_fsdb_vct_time(vct, &t);
-
-            npiFsdbValue clk_val;
-            clk_val.format = npiFsdbBinStrVal;
-            std::string curr_clk_val;
-            if (npi_fsdb_vct_value(vct, &clk_val) && clk_val.value.str) {
-                curr_clk_val = clk_val.value.str;
-            }
-
-            bool is_target_edge = false;
-            if (config.posedge && prev_clk_val == "0" && curr_clk_val == "1") {
-                is_target_edge = true;
-            } else if (!config.posedge && prev_clk_val == "1" && curr_clk_val == "0") {
-                is_target_edge = true;
-            }
-            prev_clk_val = curr_clk_val;
-            if (!is_target_edge) continue;
-
-            std::vector<std::string> signals = {
-                config.rst_n, config.psel, config.penable,
-                config.pwrite, config.paddr, config.pwdata, config.prdata
-            };
-            std::vector<std::string> values;
-            if (!read_sig_vec_value_at(file, signals, t, 'H', values)) {
-                continue;
-            }
-            if (values.size() < 7) continue;
-
-            const std::string& rst_n_val = values[0];
-            const std::string& psel_val = values[1];
-            const std::string& penable_val = values[2];
-            const std::string& pwrite_val = values[3];
-            const std::string& paddr_val = values[4];
-            const std::string& pwdata_val = values[5];
-            const std::string& prdata_val = values[6];
-
-            // Check rst_n == 1
-            if (rst_n_val.empty() || rst_n_val == "0" || rst_n_val == "X" || rst_n_val == "Z") {
-                continue;
-            }
-            // Check psel == 1
-            if (psel_val.empty() || psel_val == "0" || psel_val == "X" || psel_val == "Z") {
-                continue;
-            }
-            // Check penable == 1
-            if (penable_val.empty() || penable_val == "0" || penable_val == "X" || penable_val == "Z") {
-                continue;
-            }
-
-            bool is_write = !(pwrite_val.empty() || pwrite_val == "0" || pwrite_val == "X" || pwrite_val == "Z");
-
-            ApbTransaction txn;
-            txn.time = t;
-            txn.addr = paddr_val;
-            txn.data = is_write ? pwdata_val : prdata_val;
-            txn.is_write = is_write;
-
-            result.all.push_back(txn);
-            if (is_write) {
-                result.writes.push_back(txn);
-            } else {
-                result.reads.push_back(txn);
-            }
-        } while (npi_fsdb_goto_next(vct));
+    if (npi_fsdb_sig_hdl_vec_value_at(all_handles, min_time, init_values, npiFsdbHexStrVal) &&
+        init_values.size() == all_handles.size()) {
+        prev_clk_val = init_values[0];
+        for (size_t i = 0; i < signals.size(); ++i) values[i] = init_values[i + 1];
     }
 
-    npi_fsdb_release_vct(vct);
+    npiFsdbTimeBasedVcIter iter;
+    iter.add(clk_sig);
+    for (auto sig : sig_handles) iter.add(sig);
+    iter.iter_start(min_time, max_time);
+
+    bool have_group = false;
+    bool clk_changed = false;
+    std::string old_clk_val;
+    std::string new_clk_val;
+    npiFsdbTime group_time = 0;
+    npiFsdbTime curr_time = 0;
+    npiFsdbSigHandle changed_sig = nullptr;
+
+    auto finish_group = [&]() {
+        if (!have_group || !clk_changed) return;
+        bool is_target_edge = false;
+        if (config.posedge && old_clk_val == "0" && new_clk_val == "1") {
+            is_target_edge = true;
+        } else if (!config.posedge && old_clk_val == "1" && new_clk_val == "0") {
+            is_target_edge = true;
+        }
+        if (is_target_edge) process_edge(group_time, values);
+    };
+
+    while (iter.iter_next(curr_time, changed_sig) > 0) {
+        if (!have_group) {
+            have_group = true;
+            group_time = curr_time;
+        } else if (curr_time != group_time) {
+            finish_group();
+            group_time = curr_time;
+            clk_changed = false;
+        }
+
+        npiFsdbValue val;
+        val.format = npiFsdbHexStrVal;
+        std::string val_str;
+        if (iter.get_value(val) && val.value.str) {
+            val_str = val.value.str;
+        }
+
+        if (changed_sig == clk_sig) {
+            old_clk_val = prev_clk_val;
+            new_clk_val = val_str;
+            prev_clk_val = val_str;
+            clk_changed = true;
+        } else {
+            for (size_t i = 0; i < sig_handles.size(); ++i) {
+                if (sig_handles[i] == changed_sig) {
+                    values[i] = val_str;
+                    break;
+                }
+            }
+        }
+    }
+    finish_group();
+    iter.iter_stop();
 
     // Sort by time just in case (though VCT should naturally be in order)
     auto cmp = [](const ApbTransaction& a, const ApbTransaction& b) { return a.time < b.time; };

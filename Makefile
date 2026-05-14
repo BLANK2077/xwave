@@ -25,6 +25,7 @@ SRCS        = src/main.cpp \
               src/commands/cmd_apb.cpp \
               src/commands/cmd_axi.cpp \
               src/commands/cmd_event.cpp \
+              src/commands/cmd_ai.cpp \
               src/server/server.cpp \
               src/server/fsdb_value_reader.cpp \
               src/list/list_manager.cpp \

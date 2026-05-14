@@ -5,6 +5,7 @@
 #include "commands/cmd_apb.h"
 #include "commands/cmd_axi.h"
 #include "commands/cmd_event.h"
+#include "commands/cmd_ai.h"
 #include "server/server.h"
 #include <cstring>
 #include <cstdio>
@@ -107,6 +108,10 @@ int main(int argc, char** argv) {
     // Generic event commands
     if (strcmp(cmd, "event") == 0) {
         return cmd_event(argc, argv);
+    }
+
+    if (strcmp(cmd, "ai") == 0) {
+        return cmd_ai(argc, argv);
     }
 
     // Unknown command

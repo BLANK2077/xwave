@@ -64,6 +64,34 @@ tools/xwave-env session kill 1
 
 时间格式：`us`/`ns`/`ps`/`fs` 后缀（不区分大小写），默认 `ns`。例如 `10ns`, `100us`, `500ps`。
 
+## AI JSON 入口
+
+面向 AI Agent 或脚本时优先使用 `xwave ai`，旧的人类 CLI 保持不变：
+
+```bash
+tools/xwave-env ai query <request.json>
+tools/xwave-env ai query -
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"value.at",...}'
+tools/xwave-env ai schema
+tools/xwave-env ai actions
+```
+
+请求 envelope：
+
+```json
+{
+  "api_version": "xwave.ai.v1",
+  "request_id": "optional-id",
+  "action": "value.at",
+  "target": {"fsdb": "waves.fsdb", "auto_open": true},
+  "args": {},
+  "limits": {},
+  "output": {}
+}
+```
+
+响应 envelope 固定包含 `ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta`。已实现 action 覆盖 `session/scope/value/list/apb/axi/event` 主要能力，并新增 `verify.conditions`、`expr.eval_at`。`window.verify`、`signal.changes`、`signal.stability`、`signal.trend`、`inspect_signal`、`detect_anomaly`、`handshake.inspect` 和协议级 P2 action 仍是 planned；后续实现必须用真实 FSDB 波形校验，不能只做 mock 或 schema 测试。
+
 ## 详细命令选项速查
 
 ### `open`

@@ -47,6 +47,8 @@ void print_help(const char* prog) {
     printf("  %s event list [-n <name>] [-s <sid>]     Show event configs\n", prog);
     printf("  %s event find -n <name> -expr <expr> [-b T] [-e T] [-context T [-axi <name>] [-apb <name>]] [-json] [-s <sid>]\n", prog);
     printf("  %s event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-context T [-axi <name>] [-apb <name>]] [-json] [-s <sid>]\n", prog);
+    printf("  %s ai query <json|-|--json JSON>  Run AI-oriented JSON request\n", prog);
+    printf("  %s ai schema|actions          Show AI JSON schema or supported actions\n", prog);
     printf("  %s help [topic]             Show this help or detailed topic help\n", prog);
     printf("\nExamples:\n");
     printf("  %s open waves.fsdb\n", prog);
@@ -54,7 +56,7 @@ void print_help(const char* prog) {
     printf("  %s session list\n", prog);
     printf("  %s session kill 1\n", prog);
     printf("\nDetailed help topics:\n");
-    printf("  %s help open|session|value|list|scope|apb|axi|event\n", prog);
+    printf("  %s help open|session|value|list|scope|apb|axi|event|ai\n", prog);
     printf("\nTime arguments accept us/ns/ps/fs suffixes. Default unit is ns.\n");
 }
 
@@ -237,6 +239,27 @@ static void print_event_help(const char* prog) {
     printf("  Comparisons containing x/z evaluate to unknown and do not match events.\n");
 }
 
+static void print_ai_help(const char* prog) {
+    printf("Usage:\n");
+    printf("  %s ai query <request.json>\n", prog);
+    printf("  %s ai query -\n", prog);
+    printf("  %s ai query --json '<json>'\n", prog);
+    printf("  %s ai schema\n", prog);
+    printf("  %s ai actions\n\n", prog);
+    printf("Description:\n");
+    printf("  AI-oriented JSON API for scriptable waveform facts. Existing human CLI\n");
+    printf("  commands are unchanged; this entry wraps session, scope, value, list,\n");
+    printf("  APB, AXI, event, and basic verification actions in a stable envelope.\n\n");
+    printf("Request envelope:\n");
+    printf("  api_version: \"xwave.ai.v1\"\n");
+    printf("  action:      e.g. value.at, value.batch_at, event.find, verify.conditions\n");
+    printf("  target:      {\"fsdb\": \"waves.fsdb\", \"auto_open\": true} or {\"session_id\": 1}\n");
+    printf("  args:        action-specific arguments\n");
+    printf("  limits:      max_rows/max_events/max_samples/timeout_ms where applicable\n\n");
+    printf("Example:\n");
+    printf("  %s ai query --json '{\"api_version\":\"xwave.ai.v1\",\"action\":\"value.at\",\"target\":{\"fsdb\":\"waves.fsdb\",\"auto_open\":true},\"args\":{\"signal\":\"top.clk\",\"time\":\"10ns\"}}'\n", prog);
+}
+
 void print_help_topic(const char* prog, const char* topic) {
     if (!topic || strcmp(topic, "all") == 0) {
         print_help(prog);
@@ -250,6 +273,7 @@ void print_help_topic(const char* prog, const char* topic) {
     else if (strcmp(topic, "apb") == 0) print_apb_help(prog);
     else if (strcmp(topic, "axi") == 0) print_axi_help(prog);
     else if (strcmp(topic, "event") == 0) print_event_help(prog);
+    else if (strcmp(topic, "ai") == 0) print_ai_help(prog);
     else {
         fprintf(stderr, "Unknown help topic: %s\n\n", topic);
         print_help(prog);

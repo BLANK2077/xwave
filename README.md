@@ -330,6 +330,22 @@ tools/xwave-env session kill all            # Kill all sessions.
 | `xwave event list [-n <name>] [-s <sid>]` | Show generic event configs |
 | `xwave event find -n <name> -expr <expr> [-b T] [-e T] [-context T [-axi <axi>] [-apb <apb>]] [-json] [-s <sid>]` | Find the first matching event, optionally with AXI/APB context |
 | `xwave event export -n <name> -expr <expr> [-b T] [-e T] [-limit N] [-context T [-axi <axi>] [-apb <apb>]] [-json] [-s <sid>]` | Export an event table, default max 1000 rows, optionally with AXI/APB context |
+| `xwave ai query <json\|-\|--json JSON>` | Run an AI JSON request with a stable envelope |
+| `xwave ai schema` | Print the `xwave.ai.v1` request schema |
+| `xwave ai actions` | Print AI API actions |
+
+### AI JSON API
+
+`xwave ai` is the stable JSON entry point for AI agents and scripts. Existing human CLI commands remain unchanged. Requests use `api_version/action/target/args/limits/output`; responses use `ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta`.
+
+```bash
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"value.at","target":{"fsdb":"waves.fsdb","auto_open":true},"args":{"signal":"top.clk","time":"10ns"}}'
+tools/xwave-env ai query -
+tools/xwave-env ai schema
+tools/xwave-env ai actions
+```
+
+Current AI actions cover the main existing `session/scope/value/list/apb/axi/event` capabilities and provide `verify.conditions` plus `expr.eval_at`.
 
 ---
 
