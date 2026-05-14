@@ -11,7 +11,7 @@ NPI_LIB     = $(VERDI_HOME)/share/NPI/lib/LINUX64
 
 CXX         = g++
 CXXFLAGS    = -Wall -std=c++11 -I$(NPI_INC) -I$(NPI_L1_INC) -Isrc
-LDFLAGS     = -L$(NPI_LIB) -lNPI -lnpiL1 -ldl -lrt -lz
+LDFLAGS     = -L$(NPI_LIB) -Wl,-rpath-link,$(NPI_LIB) -lNPI -lnpiL1 -ldl -lrt -lz
 
 EXE         = xwave
 SRCS        = src/main.cpp \
