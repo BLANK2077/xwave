@@ -48,6 +48,42 @@ xwave 是基于 Synopsys NPI 的 FSDB 波形命令行查询工具。无需启动
 
 ---
 
+## 时间参数处理
+
+xwave 的时间参数支持 `us`、`ns`、`ps`、`fs` 后缀；如果不写单位，默认按 `ns` 处理。
+
+时间转换发生在 daemon 侧。daemon 打开 FSDB 后，会基于当前 FSDB 的 time scale 调用 NPI 时间转换 API，因此用户不应假设 FSDB 内部时间单位总是 `ps`。
+
+示例：
+
+```bash
+tools/xwave-env value top.clk 10ns
+tools/xwave-env list diff -l my_signals -b 5ns -e 50ns
+tools/xwave-env event find -n if0 -expr "vld && rdy" -b 100us
+```
+
+非法单位（例如 `10abc`）和负时间（例如 `-1ns`）会被拒绝。
+
+---
+
+## LSF / bsub 使用建议
+
+xwave 每个 Session 都会启动一个本机 daemon。CLI 通过 Unix domain socket 连接 daemon，Session 健康检查也依赖本机 PID 和 `/proc` 状态。因此 `open` 以及后续 `value`、`list`、`event`、`apb`、`axi`、`session kill` 等命令必须运行在同一台机器上。
+
+在芯片公司的 LSF 环境中，不建议把 xwave 命令提交到普通多机器队列，因为每条命令可能被调度到不同 host，导致后续命令连不上前一次创建的 Session。推荐找 IT 配置一个只包含一台合适机器的专用队列，用调度层保证所有 xwave/xtrace 这类 NPI 工具命令都落在同一台机器：
+
+```bash
+bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env open /path/to/waves.fsdb"
+bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env value top.clk 10ns -s 1"
+bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env session kill 1"
+```
+
+这台专用机器需要能访问共享 FSDB 路径，并配置一致的 Verdi/NPI/license 环境。如果暂时无法配置单机专用队列，次选方案是用 `bsub -m <host>` 把所有命令固定到同一台机器。
+
+如果固定机器方案仍不能满足需求，就需要修改项目架构，例如增加 TCP daemon、自动远程命令转发，或无 daemon 的单次查询模式。这些属于代码改造，不是普通使用方式。
+
+---
+
 ## 环境依赖
 
 - Linux 64 位
