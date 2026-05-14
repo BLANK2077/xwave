@@ -48,6 +48,42 @@ The same `xwave` binary works as both the CLI client and the background daemon s
 
 ---
 
+## Time Argument Handling
+
+xwave accepts `us`, `ns`, `ps`, and `fs` suffixes for time arguments. If no suffix is provided, the default unit is `ns`.
+
+Time conversion is performed inside the daemon after the FSDB is opened. The daemon calls the NPI time conversion API for the current FSDB time scale, so users should not assume that the FSDB internal time unit is always `ps`.
+
+Examples:
+
+```bash
+tools/xwave-env value top.clk 10ns
+tools/xwave-env list diff -l my_signals -b 5ns -e 50ns
+tools/xwave-env event find -n if0 -expr "vld && rdy" -b 100us
+```
+
+Invalid units such as `10abc` and negative times such as `-1ns` are rejected.
+
+---
+
+## LSF / bsub Usage
+
+xwave uses a local daemon per session. The daemon is reached through a Unix domain socket, and session health checks use local PID and `/proc` state. Because of this, `open` and later commands such as `value`, `list`, `event`, `apb`, `axi`, and `session kill` must run on the same machine.
+
+In chip-company LSF environments, avoid submitting xwave commands to a normal queue that may dispatch each command to a different host. The recommended setup is to ask IT to create a dedicated queue that contains exactly one suitable machine for xwave/xtrace-style NPI tools. Then submit all xwave commands to that queue:
+
+```bash
+bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env open /path/to/waves.fsdb"
+bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env value top.clk 10ns -s 1"
+bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env session kill 1"
+```
+
+The dedicated machine should have access to the shared FSDB path and a consistent Verdi/NPI/license environment. If a dedicated single-host queue is not available, the next simplest option is to use `bsub -m <host>` to pin all commands to one host.
+
+If fixed-machine operation is still not acceptable, the project architecture needs additional work, such as a TCP daemon, automatic remote command forwarding, or a no-daemon single-command mode. Those options are more complex and should be treated as code changes rather than normal usage.
+
+---
+
 ## Environment Requirements
 
 - Linux 64-bit.
