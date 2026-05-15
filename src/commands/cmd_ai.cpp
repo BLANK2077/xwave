@@ -51,25 +51,41 @@ static std::string trim(std::string s) {
     return s;
 }
 
+static std::string compact_expr_ws(const std::string& expr) {
+    std::string out;
+    out.reserve(expr.size());
+    for (char c : expr) {
+        if (!std::isspace(static_cast<unsigned char>(c))) out.push_back(c);
+    }
+    return out;
+}
+
 static bool contains_xz(const std::string& value) {
-    for (char c : value) {
+    std::string v = trim(value);
+    size_t start = 0;
+    if (v.size() >= 2 && v[0] == '0' && (v[1] == 'x' || v[1] == 'X')) {
+        start = 2;
+    } else if (v.size() >= 2 && v[0] == '\'' &&
+               (v[1] == 'h' || v[1] == 'H' || v[1] == 'b' || v[1] == 'B' ||
+                v[1] == 'd' || v[1] == 'D')) {
+        start = 2;
+    }
+    for (size_t i = start; i < v.size(); ++i) {
+        char c = v[i];
         if (c == 'x' || c == 'X' || c == 'z' || c == 'Z') return true;
     }
     return false;
 }
 
-static std::string strip_value_prefix(std::string value) {
+static std::string normalize_numeric(std::string value) {
     value = trim(value);
-    if (value.size() >= 2 && value[0] == '\'' &&
-        (value[1] == 'h' || value[1] == 'H' || value[1] == 'b' || value[1] == 'B' ||
-         value[1] == 'd' || value[1] == 'D')) {
+    if (value.size() >= 2 && value[0] == '\'' && (value[1] == 'h' || value[1] == 'H')) {
+        value = "0x" + value.substr(2);
+    } else if (value.size() >= 2 && value[0] == '\'' && (value[1] == 'b' || value[1] == 'B')) {
+        value = "0b" + value.substr(2);
+    } else if (value.size() >= 2 && value[0] == '\'' && (value[1] == 'd' || value[1] == 'D')) {
         value = value.substr(2);
     }
-    return value;
-}
-
-static std::string normalize_numeric(std::string value) {
-    value = strip_value_prefix(value);
     if (value.size() > 2 && value[0] == '0' && (value[1] == 'x' || value[1] == 'X')) {
         value = value.substr(2);
     } else if (value.size() > 2 && value[0] == '0' && (value[1] == 'b' || value[1] == 'B')) {
@@ -1188,6 +1204,7 @@ static int run_query(const Json& req, long long elapsed_ms) {
         if (name.empty()) em.get_latest_event(sid, info.fsdb_file, name);
         if (name.empty()) return print_error_and_return(req, action, "MISSING_FIELD", "event action requires args.name or latest config", elapsed_ms);
         std::string expr; if (!get_string(args, "expr", expr)) return print_error_and_return(req, action, "MISSING_FIELD", "event.find/export requires args.expr", elapsed_ms);
+        expr = compact_expr_ws(expr);
         Json tr = args.value("time_range", Json::object());
         std::string begin = string_or(tr, "begin", string_or(args, "begin", "0ns"));
         std::string end = string_or(tr, "end", string_or(args, "end", "max"));
