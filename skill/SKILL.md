@@ -25,6 +25,20 @@ tools/xwave-env ai schema
 tools/xwave-env ai actions
 ```
 
+For scripted extraction, pipe JSON output into `python3` instead of parsing human text. This is the recommended way for AI agents to pull specific fields or compute custom statistics:
+
+```bash
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"session.list"}' \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], d.get("summary", {}))'
+```
+
+For larger summaries, keep the xwave query bounded and do the aggregation in Python:
+
+```bash
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":1},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"0ns","end":"100us"}},"limits":{"max_rows":1000}}' \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); rows=d.get("data",{}).get("events",[]); print(len(rows))'
+```
+
 Request envelope:
 
 ```json
@@ -52,10 +66,13 @@ Response envelope always contains:
 ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta
 ```
 
+Only the top-level response envelope is stable across all actions. Field names inside `summary`, `data`, and `findings` are action-specific and may differ by action. Do not guess detailed keys such as latency subfields from memory. For exact fields, run `tools/xwave-env ai schema` when available, or issue a small bounded query against the target FSDB and inspect the returned JSON before writing extraction code.
+
 AI usage rules:
 - Start with `session.open` for repeated work, then use `target.session_id`.
 - For one-shot queries, use `target.fsdb + auto_open:true`.
 - Always inspect `ok` and `error.code`; do not parse human text.
+- Prefer `python3 -c 'import json,sys; ...'` pipelines for extracting fields or computing statistics from `xwave ai query` output.
 - Treat `known:false`, `status:"unknown"`, and `pass:null` as inconclusive waveform facts, not failures.
 - Use `scope.list` after `SIGNAL_NOT_FOUND`.
 - Use `limits.max_rows/max_events/max_samples` for broad scans.
