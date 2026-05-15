@@ -1,5 +1,6 @@
 #include "apb_analyzer.h"
 #include "../server/fsdb_value_reader.h"
+#include "../server/fsdb_scan_utils.h"
 #include "npi_fsdb.h"
 #include "npi_L1.h"
 #include <cstdio>
@@ -115,10 +116,11 @@ bool ApbAnalyzer::analyze(const std::string& name, npiFsdbFileHandle file, const
         for (size_t i = 0; i < signals.size(); ++i) values[i] = init_values[i + 1];
     }
 
-    npiFsdbTimeBasedVcIter iter;
+    TimeBasedVcIterGuard guard;
+    npiFsdbTimeBasedVcIter& iter = guard.iter();
     iter.add(clk_sig);
     for (auto sig : sig_handles) iter.add(sig);
-    iter.iter_start(min_time, max_time);
+    guard.start(min_time, max_time);
 
     bool have_group = false;
     bool clk_changed = false;
@@ -171,8 +173,6 @@ bool ApbAnalyzer::analyze(const std::string& name, npiFsdbFileHandle file, const
         }
     }
     finish_group();
-    iter.iter_stop();
-
     // Sort by time just in case (though VCT should naturally be in order)
     auto cmp = [](const ApbTransaction& a, const ApbTransaction& b) { return a.time < b.time; };
     std::sort(result.all.begin(), result.all.end(), cmp);
@@ -422,17 +422,21 @@ bool ApbAnalyzer::cursor_last(const std::string& name, int filter, const ApbTran
 bool ApbAnalyzer::get_transactions_in_range(const std::string& name,
                                             npiFsdbTime begin,
                                             npiFsdbTime end,
-                                            std::vector<ApbContextTransaction>& out) const {
+                                            std::vector<ApbContextTransaction>& out,
+                                            int max_results) const {
     out.clear();
     const ApbResult* r = get_result(name);
     if (!r) return false;
 
-    for (const auto& txn : r->all) {
-        if (txn.time >= begin && txn.time <= end) {
-            ApbContextTransaction item;
-            item.txn = &txn;
-            out.push_back(item);
-        }
+    auto it = std::lower_bound(r->all.begin(), r->all.end(), begin,
+        [](const ApbTransaction& txn, npiFsdbTime t) {
+            return txn.time < t;
+        });
+    for (; it != r->all.end() && it->time <= end; ++it) {
+        if (max_results >= 0 && static_cast<int>(out.size()) >= max_results) break;
+        ApbContextTransaction item;
+        item.txn = &(*it);
+        out.push_back(item);
     }
     return true;
 }

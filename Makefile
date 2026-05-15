@@ -28,6 +28,7 @@ SRCS        = src/main.cpp \
               src/commands/cmd_ai.cpp \
               src/server/server.cpp \
               src/server/fsdb_value_reader.cpp \
+              src/server/fsdb_scan_utils.cpp \
               src/list/list_manager.cpp \
               src/common/time_parser.cpp \
               src/apb/apb_manager.cpp \

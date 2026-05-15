@@ -19,6 +19,7 @@ struct EventQuery {
     npiFsdbTime begin = 0;
     npiFsdbTime end = 0xFFFFFFFFFFFFFFFFULL;
     int limit = -1;
+    bool fast_find = false;
 };
 
 class EventAnalyzer {

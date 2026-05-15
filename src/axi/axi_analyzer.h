@@ -43,6 +43,7 @@ struct AxiResult {
     std::vector<AxiTransaction> writes;
     std::vector<AxiTransaction> reads;
     std::vector<AxiOutstandingSample> outstanding_samples;
+    std::vector<size_t> all_by_resp_time;
 };
 
 struct AxiCursor {
@@ -114,12 +115,14 @@ public:
     bool get_transactions_in_range(const std::string& name,
                                    npiFsdbTime begin,
                                    npiFsdbTime end,
-                                   std::vector<AxiContextTransaction>& out) const;
+                                   std::vector<AxiContextTransaction>& out,
+                                   int max_results = -1) const;
 
     bool get_outstanding_samples_in_range(const std::string& name,
                                           npiFsdbTime begin,
                                           npiFsdbTime end,
-                                          std::vector<AxiOutstandingSample>& out) const;
+                                          std::vector<AxiOutstandingSample>& out,
+                                          int max_results = -1) const;
 
 private:
     std::map<std::string, AxiResult> results_;

@@ -1,5 +1,6 @@
 #include "axi_analyzer.h"
 #include "../server/fsdb_value_reader.h"
+#include "../server/fsdb_scan_utils.h"
 #include "npi_fsdb.h"
 #include "npi_L1.h"
 #include <cstdio>
@@ -10,6 +11,7 @@
 #include <deque>
 #include <map>
 #include <limits>
+#include <set>
 
 namespace xwave {
 
@@ -341,10 +343,11 @@ bool AxiAnalyzer::analyze(const std::string& name, npiFsdbFileHandle file, const
         for (size_t i = 0; i < signals.size(); ++i) values[i] = init_values[i + 1];
     }
 
-    npiFsdbTimeBasedVcIter iter;
+    TimeBasedVcIterGuard guard;
+    npiFsdbTimeBasedVcIter& iter = guard.iter();
     iter.add(clk_sig);
     for (auto sig : sig_handles) iter.add(sig);
-    iter.iter_start(min_time, max_time);
+    guard.start(min_time, max_time);
 
     bool have_group = false;
     bool clk_changed = false;
@@ -397,8 +400,6 @@ bool AxiAnalyzer::analyze(const std::string& name, npiFsdbFileHandle file, const
         }
     }
     finish_group();
-    iter.iter_stop();
-
     npi_fsdb_release_vct(vct);
 
     // Discard incomplete pending transactions
@@ -414,6 +415,12 @@ bool AxiAnalyzer::analyze(const std::string& name, npiFsdbFileHandle file, const
     std::sort(result.all.begin(), result.all.end(), cmp);
     std::sort(result.writes.begin(), result.writes.end(), cmp);
     std::sort(result.reads.begin(), result.reads.end(), cmp);
+    result.all_by_resp_time.resize(result.all.size());
+    for (size_t i = 0; i < result.all.size(); ++i) result.all_by_resp_time[i] = i;
+    std::sort(result.all_by_resp_time.begin(), result.all_by_resp_time.end(),
+        [&](size_t lhs, size_t rhs) {
+            return result.all[lhs].resp_time < result.all[rhs].resp_time;
+        });
 
     results_[name] = std::move(result);
     cursors_[name] = AxiCursor();
@@ -916,40 +923,63 @@ bool AxiAnalyzer::get_outstanding_stats(const std::string& name, int filter, con
 bool AxiAnalyzer::get_transactions_in_range(const std::string& name,
                                             npiFsdbTime begin,
                                             npiFsdbTime end,
-                                            std::vector<AxiContextTransaction>& out) const {
+                                            std::vector<AxiContextTransaction>& out,
+                                            int max_results) const {
     out.clear();
     const AxiResult* r = get_result(name);
     if (!r) return false;
 
-    for (const auto& txn : r->all) {
-        bool matched = false;
-        npiFsdbTime match_time = txn.addr_time;
-        if (txn.addr_time >= begin && txn.addr_time <= end) {
-            matched = true;
-            match_time = txn.addr_time;
-        } else if (txn.resp_time >= begin && txn.resp_time <= end) {
-            matched = true;
-            match_time = txn.resp_time;
-        }
-        if (matched) {
-            AxiContextTransaction item;
-            item.txn = &txn;
-            item.match_time = match_time;
-            out.push_back(item);
-        }
+    std::set<const AxiTransaction*> emitted;
+    auto emit = [&](const AxiTransaction& txn, npiFsdbTime match_time) {
+        if (max_results >= 0 && static_cast<int>(out.size()) >= max_results) return;
+        if (!emitted.insert(&txn).second) return;
+        AxiContextTransaction item;
+        item.txn = &txn;
+        item.match_time = match_time;
+        out.push_back(item);
+    };
+
+    auto addr_it = std::lower_bound(r->all.begin(), r->all.end(), begin,
+        [](const AxiTransaction& txn, npiFsdbTime t) {
+            return txn.addr_time < t;
+        });
+    for (; addr_it != r->all.end() && addr_it->addr_time <= end; ++addr_it) {
+        if (max_results >= 0 && static_cast<int>(out.size()) >= max_results) break;
+        emit(*addr_it, addr_it->addr_time);
     }
+
+    auto resp_it = std::lower_bound(r->all_by_resp_time.begin(), r->all_by_resp_time.end(), begin,
+        [&](size_t idx, npiFsdbTime t) {
+            return r->all[idx].resp_time < t;
+        });
+    for (; resp_it != r->all_by_resp_time.end(); ++resp_it) {
+        if (max_results >= 0 && static_cast<int>(out.size()) >= max_results) break;
+        const AxiTransaction& txn = r->all[*resp_it];
+        if (txn.resp_time > end) break;
+        emit(txn, txn.resp_time);
+    }
+
+    std::sort(out.begin(), out.end(), [](const AxiContextTransaction& lhs, const AxiContextTransaction& rhs) {
+        return lhs.match_time < rhs.match_time;
+    });
     return true;
 }
 
 bool AxiAnalyzer::get_outstanding_samples_in_range(const std::string& name,
                                                    npiFsdbTime begin,
                                                    npiFsdbTime end,
-                                                   std::vector<AxiOutstandingSample>& out) const {
+                                                   std::vector<AxiOutstandingSample>& out,
+                                                   int max_results) const {
     out.clear();
     const AxiResult* r = get_result(name);
     if (!r) return false;
-    for (const auto& sample : r->outstanding_samples) {
-        if (sample.time >= begin && sample.time <= end) out.push_back(sample);
+    auto it = std::lower_bound(r->outstanding_samples.begin(), r->outstanding_samples.end(), begin,
+        [](const AxiOutstandingSample& sample, npiFsdbTime t) {
+            return sample.time < t;
+        });
+    for (; it != r->outstanding_samples.end() && it->time <= end; ++it) {
+        if (max_results >= 0 && static_cast<int>(out.size()) >= max_results) break;
+        out.push_back(*it);
     }
     return true;
 }

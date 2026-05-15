@@ -1,5 +1,6 @@
 #include "server.h"
 #include "fsdb_value_reader.h"
+#include "fsdb_scan_utils.h"
 #include "../protocol/protocol.h"
 #include "../list/signal_list.h"
 #include "../apb/apb_analyzer.h"
@@ -836,16 +837,33 @@ static bool read_signal_changes(const std::string& signal,
                                 npiFsdbTime end,
                                 npiFsdbValType fmt,
                                 fsdbTimeValPairVec_t& changes,
-                                std::string& error) {
+                                std::string& error,
+                                int max_changes = -1,
+                                bool* truncated = nullptr) {
     changes.clear();
+    if (truncated) *truncated = false;
     npiFsdbSigHandle sig = npi_fsdb_sig_by_name(g_fsdb_file, signal.c_str(), NULL);
     if (!sig) {
         error = "Signal not found: " + signal;
         return false;
     }
-    if (!npi_fsdb_sig_hdl_value_between(sig, begin, end, changes, fmt)) {
-        error = "Failed to read value changes for signal: " + signal;
-        return false;
+    TimeBasedVcIterGuard guard;
+    npiFsdbTimeBasedVcIter& iter = guard.iter();
+    iter.add(sig);
+    guard.start(begin, end);
+    npiFsdbTime t = 0;
+    npiFsdbSigHandle changed_sig = nullptr;
+    while (iter.iter_next(t, changed_sig) > 0) {
+        if (max_changes >= 0 && static_cast<int>(changes.size()) >= max_changes) {
+            if (truncated) *truncated = true;
+            break;
+        }
+        npiFsdbValue val;
+        val.format = fmt;
+        std::string value;
+        if (!iter.get_value(val) || !val.value.str) continue;
+        value = val.value.str;
+        changes.push_back(std::make_pair(t, value));
     }
     return true;
 }
@@ -917,8 +935,9 @@ static Json ai_signal_changes(const Json& args, std::string& error) {
     int limit = args.value("limit", args.value("max_events", 1000));
     npiFsdbValType fmt = json_value_format(args);
     fsdbTimeValPairVec_t changes;
-    if (!read_signal_changes(signal, begin, end, fmt, changes, error)) return Json();
     bool truncated = false;
+    int read_limit = limit >= 0 ? limit + 1 : -1;
+    if (!read_signal_changes(signal, begin, end, fmt, changes, error, read_limit, &truncated)) return Json();
     Json data;
     data["signal"] = signal;
     data["begin"] = format_time(begin);
@@ -936,17 +955,66 @@ static Json ai_signal_changes(const Json& args, std::string& error) {
 }
 
 static Json ai_signal_stability(const Json& args, std::string& error) {
-    Json data = ai_signal_changes(args, error);
-    if (!error.empty()) return Json();
-    const Json& arr = data["changes"];
+    std::string signal = args.value("signal", std::string());
+    if (signal.empty()) {
+        error = "signal.stability requires args.signal";
+        return Json();
+    }
+    npiFsdbTime begin = 0, end = 0;
+    if (!json_time_range(args, begin, end, error)) return Json();
+    npiFsdbValType fmt = json_value_format(args);
+    bool truncated = false;
+    npiFsdbSigHandle sig = npi_fsdb_sig_by_name(g_fsdb_file, signal.c_str(), NULL);
+    if (!sig) {
+        error = "Signal not found: " + signal;
+        return Json();
+    }
+    Json arr = Json::array();
     bool stable = true;
     std::string first;
-    if (!arr.empty()) first = arr[0]["value"]["text"].get<std::string>();
-    for (const auto& item : arr) {
-        if (item["value"]["text"].get<std::string>() != first) {
+    TimeBasedVcIterGuard guard;
+    npiFsdbTimeBasedVcIter& iter = guard.iter();
+    iter.add(sig);
+    guard.start(begin, end);
+    npiFsdbTime change_time = 0;
+    npiFsdbSigHandle changed_sig = nullptr;
+    while (iter.iter_next(change_time, changed_sig) > 0) {
+        npiFsdbValue val;
+        val.format = fmt;
+        if (!iter.get_value(val) || !val.value.str) continue;
+        std::string text = value_with_prefix(val.value.str, json_value_prefix(fmt));
+        Json item;
+        item["time"] = format_time(change_time);
+        item["time_ps"] = change_time;
+        item["value"] = wave_value_json(val.value.str, json_value_prefix(fmt));
+        arr.push_back(item);
+        if (first.empty()) {
+            first = text;
+        } else if (text != first) {
             stable = false;
-            data["first_change_time"] = item["time"];
             break;
+        }
+    }
+
+    Json data;
+    data["signal"] = signal;
+    data["begin"] = format_time(begin);
+    data["end"] = format_time(end);
+    data["changes"] = arr;
+    data["transition_count"] = arr.size();
+    data["truncated"] = truncated;
+    if (!arr.empty()) {
+        data["initial_value"] = arr[0]["value"];
+        data["final_value"] = arr[arr.size() - 1]["value"];
+        data["first_change"] = arr[0]["time"];
+        data["last_change"] = arr[arr.size() - 1]["time"];
+    }
+    if (!stable) {
+        for (const auto& item : arr) {
+            if (item["value"]["text"].get<std::string>() != first) {
+                data["first_change_time"] = item["time"];
+                break;
+            }
         }
     }
     data["stable"] = stable;
@@ -986,10 +1054,11 @@ static bool sample_on_clock(const std::string& clock_path,
     std::vector<std::string> values(signal_handles.size(), "'b0");
     for (size_t i = 0; i < signal_handles.size(); ++i) values[i] = with_value_prefix(init_values[i + 1], 'b');
 
-    npiFsdbTimeBasedVcIter iter;
+    TimeBasedVcIterGuard guard;
+    npiFsdbTimeBasedVcIter& iter = guard.iter();
     iter.add(clk);
     for (auto h : signal_handles) iter.add(h);
-    iter.iter_start(begin, end);
+    guard.start(begin, end);
 
     bool have_group = false;
     bool edge = false;
@@ -1039,7 +1108,6 @@ static bool sample_on_clock(const std::string& clock_path,
         }
     }
     if (keep) finish_group();
-    iter.iter_stop();
     return error.empty();
 }
 
@@ -1122,6 +1190,8 @@ static Json ai_window_verify(const Json& args, std::string& error) {
     bool truncated = false;
     bool ok = sample_on_clock(clock, posedge, aliases, handles, begin, end, max_samples,
         [&](npiFsdbTime, const std::map<std::string, std::string>& values) -> bool {
+            bool has_eventually = false;
+            bool all_eventually_seen = true;
             for (auto& st : states) {
                 ExprTri r = ExprTri::Unknown;
                 std::string eval_error;
@@ -1136,8 +1206,14 @@ static Json ai_window_verify(const Json& args, std::string& error) {
                 if (r == ExprTri::Unknown) st.unknown++;
                 else if (pass) st.pass++;
                 else st.fail++;
+                if (st.mode == "eventually") {
+                    has_eventually = true;
+                    if (st.pass == 0) all_eventually_seen = false;
+                } else if (r == ExprTri::Unknown || !pass) {
+                    return false;
+                }
             }
-            return true;
+            return !(has_eventually && all_eventually_seen);
         }, error, samples, truncated);
     if (!ok) return Json();
 
@@ -1358,6 +1434,7 @@ static Json ai_detect_anomaly(const Json& args, std::string& error) {
     int max_findings = args.value("max_findings", 50);
     Json findings = Json::array();
     for (const auto& s : args["signals"]) {
+        if (max_findings >= 0 && static_cast<int>(findings.size()) >= max_findings) break;
         if (!s.is_string()) continue;
         std::string signal = s.get<std::string>();
         fsdbTimeValPairVec_t changes;
@@ -1435,12 +1512,13 @@ static Json ai_apb_transfer_window(const Json& args, std::string& error) {
     if (!json_time_range(args, begin, end, error)) return Json();
     if (!ensure_apb_analyzed_for_ai(name, error)) return Json();
     std::vector<xwave::ApbContextTransaction> txns;
-    if (!g_apb_analyzer.get_transactions_in_range(name, begin, end, txns)) {
+    int filter = direction_filter(args);
+    int limit = args.value("max_rows", args.value("limit", 1000));
+    int fetch_limit = (filter == 0 && limit >= 0) ? limit + 1 : -1;
+    if (!g_apb_analyzer.get_transactions_in_range(name, begin, end, txns, fetch_limit)) {
         error = "APB config not analyzed: " + name;
         return Json();
     }
-    int filter = direction_filter(args);
-    int limit = args.value("max_rows", args.value("limit", 1000));
     Json arr = Json::array();
     bool truncated = false;
     for (const auto& item : txns) {
@@ -1469,12 +1547,13 @@ static Json ai_axi_transactions_window(const Json& args, std::string& error) {
     if (!json_time_range(args, begin, end, error)) return Json();
     if (!ensure_axi_analyzed_for_ai(name, error)) return Json();
     std::vector<xwave::AxiContextTransaction> txns;
-    if (!g_axi_analyzer.get_transactions_in_range(name, begin, end, txns)) {
+    int filter = direction_filter(args);
+    int limit = args.value("max_rows", args.value("limit", 1000));
+    int fetch_limit = (filter == 0 && limit >= 0) ? limit + 1 : -1;
+    if (!g_axi_analyzer.get_transactions_in_range(name, begin, end, txns, fetch_limit)) {
         error = "AXI config not analyzed: " + name;
         return Json();
     }
-    int filter = direction_filter(args);
-    int limit = args.value("max_rows", args.value("limit", 1000));
     Json arr = Json::array();
     bool truncated = false;
     for (const auto& item : txns) {
@@ -1523,11 +1602,12 @@ static Json ai_axi_outstanding_timeline(const Json& args, std::string& error) {
     if (!json_time_range(args, begin, end, error)) return Json();
     if (!ensure_axi_analyzed_for_ai(name, error)) return Json();
     std::vector<xwave::AxiOutstandingSample> samples;
-    if (!g_axi_analyzer.get_outstanding_samples_in_range(name, begin, end, samples)) {
+    int limit = args.value("max_rows", args.value("limit", 1000));
+    int fetch_limit = limit >= 0 ? limit + 1 : -1;
+    if (!g_axi_analyzer.get_outstanding_samples_in_range(name, begin, end, samples, fetch_limit)) {
         error = "AXI config not analyzed: " + name;
         return Json();
     }
-    int limit = args.value("max_rows", args.value("limit", 1000));
     int filter = direction_filter(args);
     Json arr = Json::array();
     bool truncated = false;
@@ -1566,16 +1646,121 @@ static Json ai_axi_channel_stall(const Json& args, std::string& error) {
     else if (channel == "b") { valid = cfg.bvalid; ready = cfg.bready; }
     else if (channel == "r") { valid = cfg.rvalid; ready = cfg.rready; }
     else { valid = cfg.arvalid; ready = cfg.arready; channel = "ar"; }
-    Json hargs;
-    hargs["clock"] = cfg.clk;
-    hargs["valid"] = valid;
-    hargs["ready"] = ready;
-    hargs["sampling"] = cfg.posedge ? "posedge" : "negedge";
-    hargs["time_range"] = args.value("time_range", Json::object());
-    hargs["rules"] = args.value("rules", Json::object());
-    hargs["max_samples"] = args.value("max_samples", 1000000);
-    Json data = ai_handshake_inspect(hargs, error);
-    if (!error.empty()) return Json();
+
+    npiFsdbSigHandle clk_h = npi_fsdb_sig_by_name(g_fsdb_file, cfg.clk.c_str(), NULL);
+    npiFsdbSigHandle valid_h = npi_fsdb_sig_by_name(g_fsdb_file, valid.c_str(), NULL);
+    npiFsdbSigHandle ready_h = npi_fsdb_sig_by_name(g_fsdb_file, ready.c_str(), NULL);
+    if (!clk_h || !valid_h || !ready_h) {
+        error = "AXI channel signal not found for channel: " + channel;
+        return Json();
+    }
+
+    Json rules = args.value("rules", Json::object());
+    int max_wait = rules.value("max_wait_cycles", 100);
+    int max_samples = args.value("max_samples", 1000000);
+    int sample_count = 0, transfers = 0, ready_only = 0, max_stall = 0;
+    bool truncated = false;
+    Json findings = Json::array();
+
+    fsdbSigVec_t state_handles;
+    state_handles.push_back(valid_h);
+    state_handles.push_back(ready_h);
+    fsdbValVec_t init_values;
+    if (!npi_fsdb_sig_hdl_vec_value_at(state_handles, begin, init_values, npiFsdbBinStrVal) ||
+        init_values.size() != state_handles.size()) {
+        error = "Failed to read AXI channel initial values";
+        return Json();
+    }
+    std::string valid_value = with_value_prefix(init_values[0], 'b');
+    std::string ready_value = with_value_prefix(init_values[1], 'b');
+
+    auto visit_interval = [&](npiFsdbTime start, npiFsdbTime stop) -> bool {
+        if (stop < start) return true;
+        ExprTri v = xwave::expr_truth_value(valid_value);
+        ExprTri r = xwave::expr_truth_value(ready_value);
+        bool interesting = (v == ExprTri::True || r == ExprTri::True);
+        if (!interesting) return true;
+        ClockEdgeCursor edge_cursor(clk_h, cfg.posedge);
+        if (!edge_cursor.valid()) {
+            error = "Failed to create AXI channel clock cursor";
+            return false;
+        }
+        npiFsdbTime edge_time = 0;
+        if (!edge_cursor.first_at_or_after(start, edge_time)) return true;
+        int stall_cycles = 0;
+        npiFsdbTime stall_begin = 0;
+        while (edge_time <= stop) {
+            if (max_samples >= 0 && sample_count >= max_samples) {
+                truncated = true;
+                return false;
+            }
+            ++sample_count;
+            if (v == ExprTri::True && r == ExprTri::True) {
+                ++transfers;
+                if (stall_cycles > 0) {
+                    if (stall_cycles > max_stall) max_stall = stall_cycles;
+                    if (stall_cycles > max_wait) {
+                        findings.push_back({{"type", "long_stall"}, {"severity", "warning"},
+                                            {"begin", format_time(stall_begin)}, {"end", format_time(edge_time)},
+                                            {"cycles", stall_cycles}});
+                    }
+                    stall_cycles = 0;
+                }
+            } else if (v == ExprTri::True && r == ExprTri::False) {
+                if (stall_cycles == 0) stall_begin = edge_time;
+                ++stall_cycles;
+            } else if (r == ExprTri::True && v == ExprTri::False) {
+                ++ready_only;
+            }
+            npiFsdbTime next_edge = 0;
+            if (!edge_cursor.next(next_edge)) break;
+            if (next_edge == edge_time) break;
+            edge_time = next_edge;
+        }
+        if (stall_cycles > 0) {
+            if (stall_cycles > max_stall) max_stall = stall_cycles;
+            if (stall_cycles > max_wait) {
+                findings.push_back({{"type", "long_stall"}, {"severity", "warning"},
+                                    {"begin", format_time(stall_begin)}, {"end", format_time(stop)},
+                                    {"cycles", stall_cycles}});
+            }
+        }
+        return true;
+    };
+
+    TimeBasedVcIterGuard guard;
+    npiFsdbTimeBasedVcIter& iter = guard.iter();
+    iter.add(valid_h);
+    iter.add(ready_h);
+    guard.start(begin, end);
+    npiFsdbTime interval_begin = begin;
+    npiFsdbTime curr_time = 0;
+    npiFsdbSigHandle changed_sig = nullptr;
+    bool keep = true;
+    while (keep && iter.iter_next(curr_time, changed_sig) > 0) {
+        if (curr_time > end) break;
+        if (curr_time > interval_begin) {
+            keep = visit_interval(interval_begin, curr_time - 1);
+            if (!keep) break;
+            interval_begin = curr_time;
+        }
+        npiFsdbValue val;
+        val.format = npiFsdbBinStrVal;
+        if (iter.get_value(val) && val.value.str) {
+            if (changed_sig == valid_h) valid_value = with_value_prefix(val.value.str, 'b');
+            else if (changed_sig == ready_h) ready_value = with_value_prefix(val.value.str, 'b');
+        }
+    }
+    if (keep && interval_begin <= end) visit_interval(interval_begin, end);
+
+    Json data;
+    data["sample_count"] = sample_count;
+    data["transfer_count"] = transfers;
+    data["max_stall_cycles"] = max_stall;
+    data["ready_without_valid_cycles"] = ready_only;
+    data["data_stability_violations"] = 0;
+    data["truncated"] = truncated;
+    data["findings"] = findings;
     data["name"] = name;
     data["channel"] = channel;
     return data;
@@ -1876,6 +2061,7 @@ static void handle_event_query(int client_fd,
                                npiFsdbTime end_time,
                                int limit,
                                bool use_json,
+                               bool fast_find,
                                const char* expr,
                                const char* axi_context_name = nullptr,
                                const char* apb_context_name = nullptr,
@@ -1892,6 +2078,7 @@ static void handle_event_query(int client_fd,
     query.begin = begin_time;
     query.end = end_time;
     query.limit = limit;
+    query.fast_find = fast_find;
     std::vector<xwave::EventRecord> records;
     std::string error;
     if (!g_event_analyzer.analyze(g_fsdb_file, config, query, records, error)) {
@@ -2328,6 +2515,7 @@ static bool handle_client(int client_fd, bool& should_quit) {
                                end,
                                limit,
                                use_json,
+                               find,
                                expr_p,
                                strcmp(axi_name, "-") == 0 ? nullptr : axi_name,
                                strcmp(apb_name, "-") == 0 ? nullptr : apb_name,
@@ -2370,6 +2558,7 @@ static bool handle_client(int client_fd, bool& should_quit) {
                                end,
                                limit,
                                use_json,
+                               find,
                                expr_p);
         } else {
             const char* err = ERROR_PREFIX "Usage: EVENT_FIND|EVENT_EXPORT <name> <begin> <end> <limit> <json|text> expr <expr>\n" END_MARKER;

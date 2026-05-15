@@ -1,7 +1,9 @@
 #include "fsdb_value_reader.h"
 #include "npi_fsdb.h"
 #include "npi_L1.h"
+#include "fsdb_scan_utils.h"
 #include <set>
+#include <map>
 
 namespace xwave {
 
@@ -99,13 +101,19 @@ bool find_list_diff(npiFsdbFileHandle file,
         }
     }
 
+    std::map<std::string, int> value_counts;
+    for (const auto& value : current_values) {
+        value_counts[value]++;
+    }
+
     // Use time-based VC iterator to track changes
-    npiFsdbTimeBasedVcIter iter;
+    TimeBasedVcIterGuard guard;
+    npiFsdbTimeBasedVcIter& iter = guard.iter();
     for (auto sig : handles) {
         iter.add(sig);
     }
 
-    iter.iter_start(begin_time, end_time);
+    guard.start(begin_time, end_time);
 
     npiFsdbTime curr_time;
     npiFsdbSigHandle changed_sig;
@@ -126,26 +134,22 @@ bool find_list_diff(npiFsdbFileHandle file,
         npiFsdbValue val;
         val.format = npiFsdbHexStrVal;
         if (iter.get_value(val) && val.value.str) {
+            auto old_it = value_counts.find(current_values[changed_idx]);
+            if (old_it != value_counts.end()) {
+                if (--old_it->second == 0) value_counts.erase(old_it);
+            }
             current_values[changed_idx] = val.value.str;
+            value_counts[current_values[changed_idx]]++;
         }
 
         // Check if all values are still the same
-        bool all_same = true;
-        for (size_t i = 1; i < current_values.size(); ++i) {
-            if (current_values[i] != current_values[0]) {
-                all_same = false;
-                break;
-            }
-        }
-
-        if (!all_same) {
+        if (value_counts.size() > 1) {
             diff_time = curr_time;
             found = true;
             break;
         }
     }
 
-    iter.iter_stop();
     return found;
 }
 

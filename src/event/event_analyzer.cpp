@@ -1,5 +1,6 @@
 #include "event_analyzer.h"
 #include "../server/fsdb_value_reader.h"
+#include "../server/fsdb_scan_utils.h"
 
 #include "npi_L1.h"
 #include <algorithm>
@@ -10,6 +11,46 @@
 #include <sstream>
 
 namespace xwave {
+
+static bool collect_expr_identifiers(const std::string& expr, std::set<std::string>& out) {
+    out.clear();
+    size_t pos = 0;
+    while (pos < expr.size()) {
+        unsigned char ch = static_cast<unsigned char>(expr[pos]);
+        if (expr[pos] == '\'') {
+            pos++;
+            if (pos < expr.size()) pos++;
+            while (pos < expr.size()) {
+                unsigned char c = static_cast<unsigned char>(expr[pos]);
+                if (!std::isalnum(c) && expr[pos] != '_' && expr[pos] != 'x' && expr[pos] != 'X' &&
+                    expr[pos] != 'z' && expr[pos] != 'Z') break;
+                pos++;
+            }
+            continue;
+        }
+        if (std::isdigit(ch)) {
+            pos++;
+            while (pos < expr.size()) {
+                unsigned char c = static_cast<unsigned char>(expr[pos]);
+                if (!std::isalnum(c) && expr[pos] != '_' && expr[pos] != '\'') break;
+                pos++;
+            }
+            continue;
+        }
+        if (std::isalpha(ch) || expr[pos] == '_') {
+            size_t start = pos++;
+            while (pos < expr.size()) {
+                unsigned char c = static_cast<unsigned char>(expr[pos]);
+                if (!std::isalnum(c) && expr[pos] != '_' && expr[pos] != '.') break;
+                pos++;
+            }
+            out.insert(expr.substr(start, pos - start));
+            continue;
+        }
+        pos++;
+    }
+    return !out.empty();
+}
 
 static std::string strip_value_prefix(const std::string& value) {
     if (value.size() >= 2 && value[0] == '\'' &&
@@ -486,11 +527,81 @@ bool EventAnalyzer::analyze(npiFsdbFileHandle file,
         return true;
     };
 
-    npiFsdbTimeBasedVcIter iter;
+    auto sample_edge_and_process = [&](npiFsdbTime t, std::string& process_error) -> bool {
+        fsdbValVec_t sampled;
+        if (!npi_fsdb_sig_hdl_vec_value_at(all_handles, t, sampled, npiFsdbBinStrVal) ||
+            sampled.size() != all_handles.size()) {
+            process_error = "Failed to sample event signals at clock edge";
+            return false;
+        }
+        size_t idx = 0;
+        prev_clk_value = with_binary_prefix(sampled[idx++]);
+        if (rst) rst_value = with_binary_prefix(sampled[idx++]);
+        for (size_t i = 0; i < aliases.size(); ++i) values[i] = with_binary_prefix(sampled[idx++]);
+        return process_edge(t, process_error);
+    };
+
+    if (query.fast_find && query.limit == 1) {
+        std::set<std::string> identifiers;
+        bool fast_path_ok = collect_expr_identifiers(query.expr, identifiers);
+        std::vector<npiFsdbSigHandle> candidate_handles;
+        std::set<npiFsdbSigHandle> seen_handles;
+        auto add_candidate = [&](npiFsdbSigHandle h) {
+            if (h && seen_handles.insert(h).second) candidate_handles.push_back(h);
+        };
+        if (rst) add_candidate(rst);
+        for (const auto& id : identifiers) {
+            auto alias_it = std::find(aliases.begin(), aliases.end(), id);
+            if (alias_it != aliases.end()) {
+                size_t idx = static_cast<size_t>(alias_it - aliases.begin());
+                add_candidate(signal_handles[idx]);
+                continue;
+            }
+            auto field_it = config.fields.find(id);
+            if (field_it != config.fields.end()) {
+                fast_path_ok = false;
+                break;
+            }
+            fast_path_ok = false;
+            break;
+        }
+
+        if (fast_path_ok && !candidate_handles.empty()) {
+            ClockEdgeCursor edge_cursor(clk, config.posedge);
+            if (edge_cursor.valid()) {
+                std::set<npiFsdbTime> sampled_edges;
+                npiFsdbTime edge_time = 0;
+                if (edge_cursor.first_at_or_after(query.begin, edge_time) && edge_time <= query.end) {
+                    sampled_edges.insert(edge_time);
+                    if (!sample_edge_and_process(edge_time, error)) return false;
+                    if (!records.empty()) return true;
+                }
+
+                TimeBasedVcIterGuard candidate_guard;
+                npiFsdbTimeBasedVcIter& candidate_iter = candidate_guard.iter();
+                for (auto sig : candidate_handles) candidate_iter.add(sig);
+                candidate_guard.start(query.begin, query.end);
+
+                npiFsdbTime curr_time = 0;
+                npiFsdbSigHandle changed_sig = nullptr;
+                while (candidate_iter.iter_next(curr_time, changed_sig) > 0) {
+                    if (!edge_cursor.first_at_or_after(curr_time, edge_time)) break;
+                    if (edge_time > query.end) break;
+                    if (!sampled_edges.insert(edge_time).second) continue;
+                    if (!sample_edge_and_process(edge_time, error)) return false;
+                    if (!records.empty()) return true;
+                }
+                return true;
+            }
+        }
+    }
+
+    TimeBasedVcIterGuard guard;
+    npiFsdbTimeBasedVcIter& iter = guard.iter();
     iter.add(clk);
     if (rst) iter.add(rst);
     for (auto sig : signal_handles) iter.add(sig);
-    iter.iter_start(query.begin, query.end);
+    guard.start(query.begin, query.end);
 
     bool have_group = false;
     bool clk_changed = false;
@@ -545,7 +656,6 @@ bool EventAnalyzer::analyze(npiFsdbFileHandle file,
     }
     if (keep_scanning) finish_group();
 
-    iter.iter_stop();
     if (!error.empty()) {
         return false;
     }

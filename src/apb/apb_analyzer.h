@@ -65,7 +65,8 @@ public:
     bool get_transactions_in_range(const std::string& name,
                                    npiFsdbTime begin,
                                    npiFsdbTime end,
-                                   std::vector<ApbContextTransaction>& out) const;
+                                   std::vector<ApbContextTransaction>& out,
+                                   int max_results = -1) const;
 
 private:
     std::map<std::string, ApbResult> results_;
