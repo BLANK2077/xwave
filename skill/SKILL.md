@@ -66,7 +66,7 @@ Response envelope always contains:
 ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta
 ```
 
-Only the top-level response envelope is stable across all actions. Field names inside `summary`, `data`, and `findings` are action-specific and may differ by action. Do not guess detailed keys such as latency subfields from memory. For exact fields, run `tools/xwave-env ai schema` when available, or issue a small bounded query against the target FSDB and inspect the returned JSON before writing extraction code.
+Only the top-level response envelope is stable across all actions. Field names inside `summary`, `data`, and `findings` are action-specific and may differ by action. Do not guess detailed keys such as latency subfields from memory. For a field dictionary and extraction guidance, see [references/ai-response-dictionary.md](references/ai-response-dictionary.md). For exact fields on a specific build and FSDB, run `tools/xwave-env ai schema` when available, or issue a small bounded query and inspect the returned JSON before writing extraction code.
 
 AI usage rules:
 - Start with `session.open` for repeated work, then use `target.session_id`.
