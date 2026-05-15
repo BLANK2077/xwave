@@ -354,7 +354,7 @@ tools/xwave-env ai schema
 tools/xwave-env ai actions
 ```
 
-当前 AI action 覆盖现有 `session/scope/value/list/apb/axi/event` 主要能力，并提供 `verify.conditions` 与 `expr.eval_at`。
+当前 AI action 覆盖现有 `session/scope/value/list/apb/axi/event` 主要能力，也支持 condition/expression/window/signal/handshake 波形事实查询，以及 AXI/APB 协议事实提取。
 
 ---
 

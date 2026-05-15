@@ -35,6 +35,7 @@ SRCS        = src/main.cpp \
               src/axi/axi_manager.cpp \
               src/axi/axi_analyzer.cpp \
               src/event/event_manager.cpp \
+              src/event/event_expr.cpp \
               src/event/event_analyzer.cpp
 
 OBJS        = $(SRCS:.cpp=.o)

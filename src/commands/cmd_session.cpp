@@ -249,15 +249,21 @@ static void print_ai_help(const char* prog) {
     printf("Description:\n");
     printf("  AI-oriented JSON API for scriptable waveform facts. Existing human CLI\n");
     printf("  commands are unchanged; this entry wraps session, scope, value, list,\n");
-    printf("  APB, AXI, event, and basic verification actions in a stable envelope.\n\n");
+    printf("  APB, AXI, event, waveform verification, signal inspection, handshake,\n");
+    printf("  and protocol fact actions in a stable envelope.\n\n");
     printf("Request envelope:\n");
     printf("  api_version: \"xwave.ai.v1\"\n");
-    printf("  action:      e.g. value.at, value.batch_at, event.find, verify.conditions\n");
+    printf("  action:      e.g. value.at, event.find, window.verify, handshake.inspect\n");
     printf("  target:      {\"fsdb\": \"waves.fsdb\", \"auto_open\": true} or {\"session_id\": 1}\n");
     printf("  args:        action-specific arguments\n");
     printf("  limits:      max_rows/max_events/max_samples/timeout_ms where applicable\n\n");
     printf("Example:\n");
     printf("  %s ai query --json '{\"api_version\":\"xwave.ai.v1\",\"action\":\"value.at\",\"target\":{\"fsdb\":\"waves.fsdb\",\"auto_open\":true},\"args\":{\"signal\":\"top.clk\",\"time\":\"10ns\"}}'\n", prog);
+    printf("\nImplemented waveform-fact actions:\n");
+    printf("  verify.conditions, expr.eval_at, window.verify, signal.changes,\n");
+    printf("  signal.stability, signal.trend, inspect_signal, detect_anomaly,\n");
+    printf("  handshake.inspect, axi.channel_stall, axi.outstanding_timeline,\n");
+    printf("  axi.request_response_pair, axi.latency_outlier, apb.transfer_window\n");
 }
 
 void print_help_topic(const char* prog, const char* topic) {

@@ -246,15 +246,27 @@ static bool resolve_session(const Json& target,
 static int create_session_quiet(SessionManager& manager, const std::string& fsdb) {
     fflush(stdout);
     int saved_stdout = dup(STDOUT_FILENO);
+    int saved_stderr = dup(STDERR_FILENO);
     int devnull = open("/dev/null", O_WRONLY);
+    if (saved_stdout >= 0) fcntl(saved_stdout, F_SETFD, FD_CLOEXEC);
+    if (saved_stderr >= 0) fcntl(saved_stderr, F_SETFD, FD_CLOEXEC);
+    if (devnull >= 0) fcntl(devnull, F_SETFD, FD_CLOEXEC);
     if (saved_stdout >= 0 && devnull >= 0) {
         dup2(devnull, STDOUT_FILENO);
     }
+    if (saved_stderr >= 0 && devnull >= 0) {
+        dup2(devnull, STDERR_FILENO);
+    }
     int sid = manager.create_session(fsdb);
     fflush(stdout);
+    fflush(stderr);
     if (saved_stdout >= 0) {
         dup2(saved_stdout, STDOUT_FILENO);
         close(saved_stdout);
+    }
+    if (saved_stderr >= 0) {
+        dup2(saved_stderr, STDERR_FILENO);
+        close(saved_stderr);
     }
     if (devnull >= 0) close(devnull);
     return sid;
@@ -731,14 +743,13 @@ static void print_actions() {
         "apb.config.load", "apb.config.list", "apb.query", "apb.cursor",
         "axi.config.load", "axi.config.list", "axi.query", "axi.cursor", "axi.analysis",
         "event.config.load", "event.config.list", "event.find", "event.export",
-        "verify.conditions", "expr.eval_at"
-    });
-    out["planned"] = Json::array({
+        "verify.conditions", "expr.eval_at",
         "window.verify", "signal.changes", "signal.stability", "signal.trend",
         "inspect_signal", "detect_anomaly", "handshake.inspect",
         "axi.channel_stall", "axi.outstanding_timeline", "axi.request_response_pair",
         "axi.latency_outlier", "apb.transfer_window"
     });
+    out["planned"] = Json::array();
     print_json(out);
 }
 
@@ -777,9 +788,24 @@ static bool action_known(const std::string& action) {
         "apb.config.load", "apb.config.list", "apb.query", "apb.cursor",
         "axi.config.load", "axi.config.list", "axi.query", "axi.cursor", "axi.analysis",
         "event.config.load", "event.config.list", "event.find", "event.export",
-        "verify.conditions", "expr.eval_at"
+        "verify.conditions", "expr.eval_at",
+        "window.verify", "signal.changes", "signal.stability", "signal.trend",
+        "inspect_signal", "detect_anomaly", "handshake.inspect",
+        "axi.channel_stall", "axi.outstanding_timeline", "axi.request_response_pair",
+        "axi.latency_outlier", "apb.transfer_window"
     };
     return std::find(implemented.begin(), implemented.end(), action) != implemented.end();
+}
+
+static bool server_ai_action(const std::string& action) {
+    static const std::vector<std::string> server_actions = {
+        "expr.eval_at",
+        "window.verify", "signal.changes", "signal.stability", "signal.trend",
+        "inspect_signal", "detect_anomaly", "handshake.inspect",
+        "axi.channel_stall", "axi.outstanding_timeline", "axi.request_response_pair",
+        "axi.latency_outlier", "apb.transfer_window"
+    };
+    return std::find(server_actions.begin(), server_actions.end(), action) != server_actions.end();
 }
 
 static int run_query(const Json& req, long long elapsed_ms) {
@@ -877,6 +903,44 @@ static int run_query(const Json& req, long long elapsed_ms) {
     std::string err;
     if (!resolve_session(target, true, sid, info, err)) {
         return print_error_and_return(req, action, "SESSION_NOT_FOUND", err, elapsed_ms);
+    }
+
+    if (server_ai_action(action)) {
+        Json data;
+        std::string cmd = std::string(CMD_AI_QUERY) + " " + req.dump();
+        if (!capture_server_json(sid, cmd, data, err)) {
+            std::string code = err.find("Signal not found") != std::string::npos ? "SIGNAL_NOT_FOUND" :
+                               err.find("Clock signal not found") != std::string::npos ? "SIGNAL_NOT_FOUND" :
+                               err.find("config not found") != std::string::npos ? "INVALID_REQUEST" :
+                               err.find("expression") != std::string::npos ? "EXPR_PARSE_FAILED" :
+                               "WAVE_QUERY_FAILED";
+            return print_error_and_return(req, action, code, err, elapsed_ms);
+        }
+        Json out = ok_out(&info);
+        out["data"] = data;
+        if (data.contains("truncated")) out["meta"]["truncated"] = data["truncated"];
+        if (data.contains("findings")) out["findings"] = data["findings"];
+        if (action == "window.verify") {
+            out["summary"] = {{"all_passed", data.value("all_passed", false)},
+                              {"sample_count", data.value("sample_count", 0)},
+                              {"failed_samples", data.value("failed_samples", 0)},
+                              {"unknown_samples", data.value("unknown_samples", 0)}};
+        } else if (action == "handshake.inspect") {
+            out["summary"] = {{"transfer_count", data.value("transfer_count", 0)},
+                              {"max_stall_cycles", data.value("max_stall_cycles", 0)}};
+        } else if (action == "detect_anomaly") {
+            out["summary"] = {{"finding_count", data.value("finding_count", 0)}};
+        } else if (data.contains("transaction_count")) {
+            out["summary"] = {{"transaction_count", data["transaction_count"]}};
+        } else if (data.contains("sample_count")) {
+            out["summary"] = {{"sample_count", data["sample_count"]}};
+        } else if (data.contains("transition_count")) {
+            out["summary"] = {{"transition_count", data["transition_count"]}};
+        } else if (data.contains("status")) {
+            out["summary"] = {{"status", data["status"]}, {"known", data.value("known", false)}};
+        }
+        print_json(out);
+        return 0;
     }
 
     if (action == "value.at") {

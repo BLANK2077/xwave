@@ -345,7 +345,7 @@ tools/xwave-env ai schema
 tools/xwave-env ai actions
 ```
 
-Current AI actions cover the main existing `session/scope/value/list/apb/axi/event` capabilities and provide `verify.conditions` plus `expr.eval_at`.
+Current AI actions cover the main existing `session/scope/value/list/apb/axi/event` capabilities, condition/expression/window/signal/handshake waveform facts, and AXI/APB protocol fact extraction.
 
 ---
 

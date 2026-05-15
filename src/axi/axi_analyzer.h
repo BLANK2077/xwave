@@ -116,6 +116,11 @@ public:
                                    npiFsdbTime end,
                                    std::vector<AxiContextTransaction>& out) const;
 
+    bool get_outstanding_samples_in_range(const std::string& name,
+                                          npiFsdbTime begin,
+                                          npiFsdbTime end,
+                                          std::vector<AxiOutstandingSample>& out) const;
+
 private:
     std::map<std::string, AxiResult> results_;
     std::map<std::string, AxiCursor> cursors_;

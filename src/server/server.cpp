@@ -7,6 +7,7 @@
 #include "../axi/axi_analyzer.h"
 #include "../axi/axi_manager.h"
 #include "../event/event_analyzer.h"
+#include "../event/event_expr.h"
 #include "../event/event_manager.h"
 #include "../session/session_registry.h"
 #include "../json.hpp"
@@ -28,6 +29,10 @@
 #include <cerrno>
 #include <cmath>
 #include <strings.h>
+#include <algorithm>
+#include <map>
+#include <sstream>
+#include <functional>
 
 // NPI headers
 #include "npi.h"
@@ -93,6 +98,38 @@ static bool send_all(int fd, const char* buf, size_t len) {
 
 static std::string json_response(const Json& j) {
     return j.dump() + "\n" + END_MARKER;
+}
+
+static bool contains_xz_value(const std::string& value) {
+    for (char c : value) {
+        if (c == 'x' || c == 'X' || c == 'z' || c == 'Z') return true;
+    }
+    return false;
+}
+
+static std::string with_value_prefix(const std::string& value, char prefix) {
+    if (value.size() >= 2 && value[0] == '\'') return value;
+    char p = static_cast<char>(std::tolower(static_cast<unsigned char>(prefix)));
+    return std::string("'") + p + value;
+}
+
+static Json wave_value_json(const std::string& raw, char prefix = 'b') {
+    Json v;
+    std::string text = with_value_prefix(raw, prefix);
+    v["text"] = text;
+    v["known"] = !contains_xz_value(text);
+    if (!v["known"].get<bool>()) v["unknown_reason"] = "contains_xz";
+    if (text.size() >= 2 && text[0] == '\'' && (text[1] == 'b' || text[1] == 'B')) v["bits"] = text.substr(2);
+    if (text.size() >= 2 && text[0] == '\'' && (text[1] == 'h' || text[1] == 'H')) v["hex"] = "0x" + text.substr(2);
+    if (v["known"].get<bool>()) {
+        std::string bits = xwave::expr_bits_only(text);
+        unsigned long long u = 0;
+        for (char c : bits) {
+            u = (u << 1) | (c == '1' ? 1ULL : 0ULL);
+        }
+        v["unsigned"] = u;
+    }
+    return v;
 }
 
 static bool stat_fsdb(long& mtime,
@@ -262,6 +299,40 @@ static std::string format_time(npiFsdbTime t) {
         return std::to_string(t / 1000) + "ns";
     }
     return std::to_string(t) + "ps";
+}
+
+static bool json_time_range(const Json& args,
+                            npiFsdbTime& begin,
+                            npiFsdbTime& end,
+                            std::string& error) {
+    begin = 0;
+    end = 0xFFFFFFFFFFFFFFFFULL;
+    Json tr = args.value("time_range", Json::object());
+    std::string begin_s = tr.value("begin", args.value("begin", std::string("0ns")));
+    std::string end_s = tr.value("end", args.value("end", std::string("max")));
+    return parse_user_time(begin_s.c_str(), false, begin, error) &&
+           parse_user_time(end_s.c_str(), true, end, error);
+}
+
+static npiFsdbValType json_value_format(const Json& args) {
+    std::string fmt = args.value("format", std::string("binary"));
+    if (fmt == "hex" || fmt == "h") return npiFsdbHexStrVal;
+    if (fmt == "decimal" || fmt == "dec" || fmt == "d") return npiFsdbDecStrVal;
+    return npiFsdbBinStrVal;
+}
+
+static std::string compact_expr_ws(const std::string& expr) {
+    std::string out;
+    for (char c : expr) {
+        if (!std::isspace(static_cast<unsigned char>(c))) out.push_back(c);
+    }
+    return out;
+}
+
+static char json_value_prefix(npiFsdbValType fmt) {
+    if (fmt == npiFsdbHexStrVal) return 'h';
+    if (fmt == npiFsdbDecStrVal) return 'd';
+    return 'b';
 }
 
 static void handle_value(int client_fd, const char* signal_path, npiFsdbTime time, char fmt) {
@@ -758,6 +829,780 @@ static std::string format_axi_txn_json(const xwave::AxiTransaction* txn) {
     if (!txn) return std::string(END_MARKER);
     Json j = axi_txn_to_json(txn);
     return json_response(j);
+}
+
+static bool read_signal_changes(const std::string& signal,
+                                npiFsdbTime begin,
+                                npiFsdbTime end,
+                                npiFsdbValType fmt,
+                                fsdbTimeValPairVec_t& changes,
+                                std::string& error) {
+    changes.clear();
+    npiFsdbSigHandle sig = npi_fsdb_sig_by_name(g_fsdb_file, signal.c_str(), NULL);
+    if (!sig) {
+        error = "Signal not found: " + signal;
+        return false;
+    }
+    if (!npi_fsdb_sig_hdl_value_between(sig, begin, end, changes, fmt)) {
+        error = "Failed to read value changes for signal: " + signal;
+        return false;
+    }
+    return true;
+}
+
+static Json changes_to_json(const fsdbTimeValPairVec_t& changes,
+                            char prefix,
+                            int limit,
+                            bool& truncated) {
+    Json arr = Json::array();
+    truncated = false;
+    for (size_t i = 0; i < changes.size(); ++i) {
+        if (limit >= 0 && static_cast<int>(arr.size()) >= limit) {
+            truncated = true;
+            break;
+        }
+        Json item;
+        item["time"] = format_time(changes[i].first);
+        item["time_ps"] = changes[i].first;
+        item["value"] = wave_value_json(changes[i].second, prefix);
+        arr.push_back(item);
+    }
+    return arr;
+}
+
+static bool build_signal_alias_handles(const Json& signals,
+                                       std::vector<std::string>& aliases,
+                                       std::vector<std::string>& paths,
+                                       fsdbSigVec_t& handles,
+                                       std::string& error) {
+    if (!signals.is_object()) {
+        error = "signals must be an object";
+        return false;
+    }
+    std::map<std::string, std::string> seen;
+    for (auto it = signals.begin(); it != signals.end(); ++it) {
+        if (!it.value().is_string()) {
+            error = "signal path must be string for alias: " + it.key();
+            return false;
+        }
+        std::string alias = it.key();
+        std::string path = it.value().get<std::string>();
+        auto prev = seen.find(alias);
+        if (prev != seen.end() && prev->second != path) {
+            error = "alias maps to different signals: " + alias;
+            return false;
+        }
+        if (prev != seen.end()) continue;
+        npiFsdbSigHandle sig = npi_fsdb_sig_by_name(g_fsdb_file, path.c_str(), NULL);
+        if (!sig) {
+            error = "Signal not found: " + path;
+            return false;
+        }
+        seen[alias] = path;
+        aliases.push_back(alias);
+        paths.push_back(path);
+        handles.push_back(sig);
+    }
+    return true;
+}
+
+static Json ai_signal_changes(const Json& args, std::string& error) {
+    std::string signal = args.value("signal", std::string());
+    if (signal.empty()) {
+        error = "signal.changes requires args.signal";
+        return Json();
+    }
+    npiFsdbTime begin = 0, end = 0;
+    if (!json_time_range(args, begin, end, error)) return Json();
+    int limit = args.value("limit", args.value("max_events", 1000));
+    npiFsdbValType fmt = json_value_format(args);
+    fsdbTimeValPairVec_t changes;
+    if (!read_signal_changes(signal, begin, end, fmt, changes, error)) return Json();
+    bool truncated = false;
+    Json data;
+    data["signal"] = signal;
+    data["begin"] = format_time(begin);
+    data["end"] = format_time(end);
+    data["changes"] = changes_to_json(changes, json_value_prefix(fmt), limit, truncated);
+    data["transition_count"] = changes.size();
+    data["truncated"] = truncated;
+    if (!changes.empty()) {
+        data["initial_value"] = wave_value_json(changes.front().second, json_value_prefix(fmt));
+        data["final_value"] = wave_value_json(changes.back().second, json_value_prefix(fmt));
+        data["first_change"] = format_time(changes.front().first);
+        data["last_change"] = format_time(changes.back().first);
+    }
+    return data;
+}
+
+static Json ai_signal_stability(const Json& args, std::string& error) {
+    Json data = ai_signal_changes(args, error);
+    if (!error.empty()) return Json();
+    const Json& arr = data["changes"];
+    bool stable = true;
+    std::string first;
+    if (!arr.empty()) first = arr[0]["value"]["text"].get<std::string>();
+    for (const auto& item : arr) {
+        if (item["value"]["text"].get<std::string>() != first) {
+            stable = false;
+            data["first_change_time"] = item["time"];
+            break;
+        }
+    }
+    data["stable"] = stable;
+    if (stable && !arr.empty()) data["value"] = arr[0]["value"];
+    return data;
+}
+
+static bool sample_on_clock(const std::string& clock_path,
+                            bool posedge,
+                            const std::vector<std::string>& aliases,
+                            const fsdbSigVec_t& signal_handles,
+                            npiFsdbTime begin,
+                            npiFsdbTime end,
+                            int max_samples,
+                            std::function<bool(npiFsdbTime, const std::map<std::string, std::string>&)> cb,
+                            std::string& error,
+                            int& sample_count,
+                            bool& truncated) {
+    sample_count = 0;
+    truncated = false;
+    npiFsdbSigHandle clk = npi_fsdb_sig_by_name(g_fsdb_file, clock_path.c_str(), NULL);
+    if (!clk) {
+        error = "Clock signal not found: " + clock_path;
+        return false;
+    }
+    fsdbSigVec_t all_handles;
+    all_handles.push_back(clk);
+    for (auto h : signal_handles) all_handles.push_back(h);
+    fsdbValVec_t init_values;
+    npiFsdbTime init_time = begin > 0 ? begin - 1 : begin;
+    if (!npi_fsdb_sig_hdl_vec_value_at(all_handles, init_time, init_values, npiFsdbBinStrVal) ||
+        init_values.size() != all_handles.size()) {
+        error = "Failed to read initial sampled values";
+        return false;
+    }
+    std::string prev_clk = with_value_prefix(init_values[0], 'b');
+    std::vector<std::string> values(signal_handles.size(), "'b0");
+    for (size_t i = 0; i < signal_handles.size(); ++i) values[i] = with_value_prefix(init_values[i + 1], 'b');
+
+    npiFsdbTimeBasedVcIter iter;
+    iter.add(clk);
+    for (auto h : signal_handles) iter.add(h);
+    iter.iter_start(begin, end);
+
+    bool have_group = false;
+    bool edge = false;
+    npiFsdbTime group_time = 0;
+    auto finish_group = [&]() -> bool {
+        if (!have_group || !edge) return true;
+        std::map<std::string, std::string> value_map;
+        for (size_t i = 0; i < aliases.size(); ++i) value_map[aliases[i]] = values[i];
+        ++sample_count;
+        if (max_samples >= 0 && sample_count > max_samples) {
+            truncated = true;
+            return false;
+        }
+        return cb(group_time, value_map);
+    };
+
+    npiFsdbTime curr_time = 0;
+    npiFsdbSigHandle changed_sig = nullptr;
+    bool keep = true;
+    while (keep && iter.iter_next(curr_time, changed_sig) > 0) {
+        if (!have_group) {
+            have_group = true;
+            group_time = curr_time;
+        } else if (curr_time != group_time) {
+            keep = finish_group();
+            if (!keep) break;
+            group_time = curr_time;
+            edge = false;
+        }
+        npiFsdbValue val;
+        val.format = npiFsdbBinStrVal;
+        if (!iter.get_value(val) || !val.value.str) continue;
+        std::string v = with_value_prefix(val.value.str, 'b');
+        if (changed_sig == clk) {
+            ExprTri old_clk = xwave::expr_truth_value(prev_clk);
+            ExprTri new_clk = xwave::expr_truth_value(v);
+            edge = posedge ? (old_clk == ExprTri::False && new_clk == ExprTri::True)
+                           : (old_clk == ExprTri::True && new_clk == ExprTri::False);
+            prev_clk = v;
+        } else {
+            for (size_t i = 0; i < signal_handles.size(); ++i) {
+                if (signal_handles[i] == changed_sig) {
+                    values[i] = v;
+                    break;
+                }
+            }
+        }
+    }
+    if (keep) finish_group();
+    iter.iter_stop();
+    return error.empty();
+}
+
+static Json ai_expr_eval_at(const Json& args, std::string& error) {
+    std::string time_s = args.value("time", std::string());
+    std::string expr = compact_expr_ws(args.value("expr", std::string()));
+    if (time_s.empty() || expr.empty() || !args.contains("signals")) {
+        error = "expr.eval_at requires args.time, args.expr and args.signals";
+        return Json();
+    }
+    npiFsdbTime t = 0;
+    if (!parse_user_time(time_s.c_str(), false, t, error)) return Json();
+    std::vector<std::string> aliases, paths;
+    fsdbSigVec_t handles;
+    if (!build_signal_alias_handles(args["signals"], aliases, paths, handles, error)) return Json();
+    fsdbValVec_t values;
+    if (!npi_fsdb_sig_hdl_vec_value_at(handles, t, values, npiFsdbBinStrVal) || values.size() != handles.size()) {
+        error = "Failed to read expression operands";
+        return Json();
+    }
+    std::map<std::string, std::string> value_map;
+    Json operands = Json::array();
+    for (size_t i = 0; i < aliases.size(); ++i) {
+        std::string v = with_value_prefix(values[i], 'b');
+        value_map[aliases[i]] = v;
+        operands.push_back({{"alias", aliases[i]}, {"signal", paths[i]}, {"value", wave_value_json(v, 'b')}});
+    }
+    ExprTri result = ExprTri::Unknown;
+    if (!xwave::eval_event_expression(expr, value_map, result, error)) return Json();
+    Json data;
+    data["expr"] = expr;
+    data["time"] = format_time(t);
+    data["time_ps"] = t;
+    data["status"] = xwave::expr_tri_text(result);
+    data["known"] = result != ExprTri::Unknown;
+    data["expr_value"] = result == ExprTri::True ? Json(true) : result == ExprTri::False ? Json(false) : Json(nullptr);
+    data["operands"] = operands;
+    return data;
+}
+
+static Json ai_window_verify(const Json& args, std::string& error) {
+    std::string clock = args.value("clock", std::string());
+    if (clock.empty() || !args.contains("conditions") || !args["conditions"].is_array()) {
+        error = "window.verify requires args.clock and args.conditions[]";
+        return Json();
+    }
+    npiFsdbTime begin = 0, end = 0;
+    if (!json_time_range(args, begin, end, error)) return Json();
+    bool posedge = args.value("sampling", std::string("posedge")) != "negedge";
+    int max_samples = args.value("max_samples", 1000000);
+
+    Json signal_union = Json::object();
+    for (const auto& cond : args["conditions"]) {
+        if (!cond.contains("expr") || !cond.contains("signals")) {
+            error = "each condition requires expr and signals";
+            return Json();
+        }
+        for (auto it = cond["signals"].begin(); it != cond["signals"].end(); ++it) {
+            if (signal_union.contains(it.key()) && signal_union[it.key()] != it.value()) {
+                error = "duplicate alias maps to different signals: " + it.key();
+                return Json();
+            }
+            signal_union[it.key()] = it.value();
+        }
+    }
+    std::vector<std::string> aliases, paths;
+    fsdbSigVec_t handles;
+    if (!build_signal_alias_handles(signal_union, aliases, paths, handles, error)) return Json();
+
+    struct CondState { std::string expr; std::string mode; int pass = 0; int fail = 0; int unknown = 0; };
+    std::vector<CondState> states;
+    for (const auto& cond : args["conditions"]) {
+        CondState st;
+        st.expr = compact_expr_ws(cond.value("expr", std::string()));
+        st.mode = cond.value("mode", std::string("always"));
+        states.push_back(st);
+    }
+
+    int samples = 0;
+    bool truncated = false;
+    bool ok = sample_on_clock(clock, posedge, aliases, handles, begin, end, max_samples,
+        [&](npiFsdbTime, const std::map<std::string, std::string>& values) -> bool {
+            for (auto& st : states) {
+                ExprTri r = ExprTri::Unknown;
+                std::string eval_error;
+                if (!xwave::eval_event_expression(st.expr, values, r, eval_error)) {
+                    error = eval_error;
+                    return false;
+                }
+                bool pass = false;
+                if (st.mode == "eventually") pass = (r == ExprTri::True);
+                else if (st.mode == "never") pass = (r == ExprTri::False);
+                else pass = (r == ExprTri::True);
+                if (r == ExprTri::Unknown) st.unknown++;
+                else if (pass) st.pass++;
+                else st.fail++;
+            }
+            return true;
+        }, error, samples, truncated);
+    if (!ok) return Json();
+
+    Json conds = Json::array();
+    bool all_passed = true;
+    int failed_samples = 0, unknown_samples = 0;
+    for (const auto& st : states) {
+        bool passed = false;
+        if (st.mode == "eventually") passed = st.pass > 0;
+        else passed = st.fail == 0 && st.unknown == 0;
+        if (!passed) all_passed = false;
+        failed_samples += st.fail;
+        unknown_samples += st.unknown;
+        conds.push_back({{"expr", st.expr}, {"mode", st.mode}, {"passed", passed},
+                         {"pass_samples", st.pass}, {"failed_samples", st.fail}, {"unknown_samples", st.unknown}});
+    }
+    Json data;
+    data["all_passed"] = all_passed;
+    data["sample_count"] = samples;
+    data["failed_samples"] = failed_samples;
+    data["unknown_samples"] = unknown_samples;
+    data["truncated"] = truncated;
+    data["conditions"] = conds;
+    return data;
+}
+
+static Json ai_signal_trend(const Json& args, std::string& error) {
+    std::string signal = args.value("signal", std::string());
+    std::string clock = args.value("clock", std::string());
+    if (signal.empty() || clock.empty()) {
+        error = "signal.trend requires args.signal and args.clock";
+        return Json();
+    }
+    npiFsdbTime begin = 0, end = 0;
+    if (!json_time_range(args, begin, end, error)) return Json();
+    Json signals = {{"sig", signal}};
+    std::vector<std::string> aliases, paths;
+    fsdbSigVec_t handles;
+    if (!build_signal_alias_handles(signals, aliases, paths, handles, error)) return Json();
+    bool posedge = args.value("sampling", std::string("posedge")) != "negedge";
+    int max_samples = args.value("max_samples", 1000000);
+    bool have = false, stable = true, inc = true, dec = true;
+    unsigned long long first = 0, last = 0, minv = 0, maxv = 0, prev = 0;
+    int unknown = 0, samples = 0;
+    bool truncated = false;
+    if (!sample_on_clock(clock, posedge, aliases, handles, begin, end, max_samples,
+        [&](npiFsdbTime, const std::map<std::string, std::string>& values) -> bool {
+            auto it = values.find("sig");
+            if (it == values.end() || contains_xz_value(it->second)) {
+                unknown++;
+                return true;
+            }
+            std::string bits = xwave::expr_bits_only(it->second);
+            unsigned long long v = 0;
+            for (char c : bits) v = (v << 1) | (c == '1' ? 1ULL : 0ULL);
+            if (!have) {
+                first = last = minv = maxv = prev = v;
+                have = true;
+            } else {
+                if (v != prev) stable = false;
+                if (v < prev) inc = false;
+                if (v > prev) dec = false;
+                if (v < minv) minv = v;
+                if (v > maxv) maxv = v;
+                prev = v;
+                last = v;
+            }
+            return true;
+        }, error, samples, truncated)) return Json();
+    Json data;
+    data["signal"] = signal;
+    data["sample_count"] = samples;
+    data["unknown_count"] = unknown;
+    data["stable"] = stable;
+    data["truncated"] = truncated;
+    if (have) {
+        data["initial_value"] = first;
+        data["final_value"] = last;
+        data["min_value"] = minv;
+        data["max_value"] = maxv;
+        data["monotonic"] = stable ? "stable" : inc ? "increasing" : dec ? "decreasing" : "none";
+    }
+    return data;
+}
+
+static Json ai_handshake_inspect(const Json& args, std::string& error) {
+    std::string clock = args.value("clock", std::string());
+    std::string valid = args.value("valid", std::string());
+    std::string ready = args.value("ready", std::string());
+    if (clock.empty() || valid.empty() || ready.empty()) {
+        error = "handshake.inspect requires args.clock, args.valid and args.ready";
+        return Json();
+    }
+    npiFsdbTime begin = 0, end = 0;
+    if (!json_time_range(args, begin, end, error)) return Json();
+    Json signals = {{"valid", valid}, {"ready", ready}};
+    if (args.contains("data") && args["data"].is_array()) {
+        int idx = 0;
+        for (const auto& d : args["data"]) if (d.is_string()) signals["data" + std::to_string(idx++)] = d.get<std::string>();
+    }
+    std::vector<std::string> aliases, paths;
+    fsdbSigVec_t handles;
+    if (!build_signal_alias_handles(signals, aliases, paths, handles, error)) return Json();
+    bool posedge = args.value("sampling", std::string("posedge")) != "negedge";
+    Json rules = args.value("rules", Json::object());
+    int max_wait = rules.value("max_wait_cycles", 100);
+    bool check_data = rules.value("check_data_stable_when_stalled", false);
+    int samples = 0, transfers = 0, stall_cycles = 0, max_stall = 0, ready_only = 0, data_violations = 0;
+    bool in_stall = false, truncated = false;
+    npiFsdbTime stall_begin = 0;
+    std::map<std::string, std::string> stall_data;
+    Json findings = Json::array();
+    if (!sample_on_clock(clock, posedge, aliases, handles, begin, end, args.value("max_samples", 1000000),
+        [&](npiFsdbTime t, const std::map<std::string, std::string>& values) -> bool {
+            ExprTri v = xwave::expr_truth_value(values.at("valid"));
+            ExprTri r = xwave::expr_truth_value(values.at("ready"));
+            bool transfer = v == ExprTri::True && r == ExprTri::True;
+            bool stall = v == ExprTri::True && r == ExprTri::False;
+            if (transfer) transfers++;
+            if (r == ExprTri::True && v == ExprTri::False) ready_only++;
+            if (stall) {
+                stall_cycles++;
+                if (!in_stall) {
+                    in_stall = true;
+                    stall_begin = t;
+                    stall_data = values;
+                } else if (check_data) {
+                    for (const auto& kv : values) {
+                        if (kv.first.find("data") == 0 && stall_data[kv.first] != kv.second) data_violations++;
+                    }
+                }
+            } else if (in_stall) {
+                int cycles = stall_cycles;
+                if (cycles > max_stall) max_stall = cycles;
+                if (cycles > max_wait) {
+                    findings.push_back({{"type", "long_stall"}, {"severity", "warning"},
+                                        {"begin", format_time(stall_begin)}, {"end", format_time(t)}, {"cycles", cycles}});
+                }
+                in_stall = false;
+                stall_cycles = 0;
+            }
+            return true;
+        }, error, samples, truncated)) return Json();
+    if (in_stall && stall_cycles > max_stall) max_stall = stall_cycles;
+    Json data;
+    data["sample_count"] = samples;
+    data["transfer_count"] = transfers;
+    data["max_stall_cycles"] = max_stall;
+    data["ready_without_valid_cycles"] = ready_only;
+    data["data_stability_violations"] = data_violations;
+    data["truncated"] = truncated;
+    data["findings"] = findings;
+    return data;
+}
+
+static Json ai_inspect_signal(const Json& args, std::string& error) {
+    Json data = ai_signal_changes(args, error);
+    if (!error.empty()) return Json();
+    npiFsdbTime glitch_threshold = 0;
+    std::string threshold = args.value("glitch_threshold", std::string("1ns"));
+    parse_user_time(threshold.c_str(), false, glitch_threshold, error);
+    if (!error.empty()) return Json();
+    Json arr = data["changes"];
+    Json period;
+    double total_period = 0.0;
+    int period_count = 0;
+    int glitch_count = 0;
+    for (size_t i = 1; i < arr.size(); ++i) {
+        npiFsdbTime t0 = arr[i - 1]["time_ps"].get<npiFsdbTime>();
+        npiFsdbTime t1 = arr[i]["time_ps"].get<npiFsdbTime>();
+        npiFsdbTime width = t1 >= t0 ? t1 - t0 : 0;
+        if (width > 0) {
+            total_period += static_cast<double>(width);
+            period_count++;
+            if (width < glitch_threshold) glitch_count++;
+        }
+    }
+    data["edge_count"] = arr.size();
+    data["glitch"] = {{"count", glitch_count}, {"threshold", format_time(glitch_threshold)}};
+    if (period_count > 0) {
+        period["avg_ps"] = total_period / period_count;
+        period["samples"] = period_count;
+        data["period"] = period;
+    }
+    return data;
+}
+
+static Json ai_detect_anomaly(const Json& args, std::string& error) {
+    if (!args.contains("signals") || !args["signals"].is_array()) {
+        error = "detect_anomaly requires args.signals[]";
+        return Json();
+    }
+    npiFsdbTime begin = 0, end = 0;
+    if (!json_time_range(args, begin, end, error)) return Json();
+    Json checks = args.value("checks", Json::array());
+    npiFsdbTime glitch_width = 0, stuck_duration = 0;
+    bool check_glitch = false, check_stuck = false, check_unknown = false;
+    for (const auto& c : checks) {
+        std::string type = c.value("type", std::string());
+        if (type == "glitch") {
+            check_glitch = true;
+            std::string v = c.value("min_pulse_width", std::string("1ns"));
+            if (!parse_user_time(v.c_str(), false, glitch_width, error)) return Json();
+        } else if (type == "stuck") {
+            check_stuck = true;
+            std::string v = c.value("min_duration", std::string("1us"));
+            if (!parse_user_time(v.c_str(), false, stuck_duration, error)) return Json();
+        } else if (type == "unknown_xz") {
+            check_unknown = true;
+        }
+    }
+    if (checks.empty()) {
+        check_unknown = true;
+        check_stuck = true;
+        parse_user_time("1us", false, stuck_duration, error);
+        if (!error.empty()) return Json();
+    }
+    int max_findings = args.value("max_findings", 50);
+    Json findings = Json::array();
+    for (const auto& s : args["signals"]) {
+        if (!s.is_string()) continue;
+        std::string signal = s.get<std::string>();
+        fsdbTimeValPairVec_t changes;
+        if (!read_signal_changes(signal, begin, end, npiFsdbBinStrVal, changes, error)) return Json();
+        for (size_t i = 0; i < changes.size(); ++i) {
+            if (max_findings >= 0 && static_cast<int>(findings.size()) >= max_findings) break;
+            if (check_unknown && contains_xz_value(changes[i].second)) {
+                findings.push_back({{"type", "unknown_xz"}, {"signal", signal}, {"severity", "warning"},
+                                    {"time", format_time(changes[i].first)}, {"value", wave_value_json(changes[i].second, 'b')}});
+            }
+            if (check_glitch && i + 1 < changes.size()) {
+                npiFsdbTime width = changes[i + 1].first >= changes[i].first ? changes[i + 1].first - changes[i].first : 0;
+                if (width > 0 && width < glitch_width) {
+                    findings.push_back({{"type", "glitch"}, {"signal", signal}, {"severity", "info"},
+                                        {"time", format_time(changes[i].first)}, {"pulse_width", format_time(width)}});
+                }
+            }
+            if (check_stuck && i + 1 < changes.size()) {
+                npiFsdbTime width = changes[i + 1].first >= changes[i].first ? changes[i + 1].first - changes[i].first : 0;
+                if (width >= stuck_duration) {
+                    findings.push_back({{"type", "stuck"}, {"signal", signal}, {"severity", "warning"},
+                                        {"begin", format_time(changes[i].first)}, {"end", format_time(changes[i + 1].first)},
+                                        {"duration", format_time(width)}, {"value", wave_value_json(changes[i].second, 'b')}});
+                }
+            }
+        }
+    }
+    Json data;
+    data["finding_count"] = findings.size();
+    data["findings"] = findings;
+    data["truncated"] = max_findings >= 0 && static_cast<int>(findings.size()) >= max_findings;
+    return data;
+}
+
+static int direction_filter(const Json& args) {
+    std::string direction = args.value("direction", std::string("all"));
+    if (direction == "wr" || direction == "write") return 1;
+    if (direction == "rd" || direction == "read") return 2;
+    return 0;
+}
+
+static bool ensure_apb_analyzed_for_ai(const std::string& name, std::string& error) {
+    xwave::ApbConfig config;
+    if (!read_apb_from_registry(g_session_id, name.c_str(), config)) {
+        error = "APB config not found: " + name;
+        return false;
+    }
+    if (!g_apb_analyzer.analyze(name, g_fsdb_file, config)) {
+        error = "Failed to analyze APB: " + name;
+        return false;
+    }
+    return true;
+}
+
+static bool ensure_axi_analyzed_for_ai(const std::string& name, std::string& error) {
+    xwave::AxiConfig config;
+    if (!read_axi_from_registry(g_session_id, name.c_str(), config)) {
+        error = "AXI config not found: " + name;
+        return false;
+    }
+    if (!g_axi_analyzer.analyze(name, g_fsdb_file, config)) {
+        error = "Failed to analyze AXI: " + name;
+        return false;
+    }
+    return true;
+}
+
+static Json ai_apb_transfer_window(const Json& args, std::string& error) {
+    std::string name = args.value("name", std::string());
+    if (name.empty()) {
+        error = "apb.transfer_window requires args.name";
+        return Json();
+    }
+    npiFsdbTime begin = 0, end = 0;
+    if (!json_time_range(args, begin, end, error)) return Json();
+    if (!ensure_apb_analyzed_for_ai(name, error)) return Json();
+    std::vector<xwave::ApbContextTransaction> txns;
+    if (!g_apb_analyzer.get_transactions_in_range(name, begin, end, txns)) {
+        error = "APB config not analyzed: " + name;
+        return Json();
+    }
+    int filter = direction_filter(args);
+    int limit = args.value("max_rows", args.value("limit", 1000));
+    Json arr = Json::array();
+    bool truncated = false;
+    for (const auto& item : txns) {
+        if (!item.txn) continue;
+        if (filter == 1 && !item.txn->is_write) continue;
+        if (filter == 2 && item.txn->is_write) continue;
+        if (limit >= 0 && static_cast<int>(arr.size()) >= limit) {
+            truncated = true;
+            break;
+        }
+        Json txn = apb_txn_to_json(item.txn, true);
+        txn["time_ps"] = item.txn->time;
+        arr.push_back(txn);
+    }
+    return Json{{"name", name}, {"begin", format_time(begin)}, {"end", format_time(end)},
+                {"transaction_count", arr.size()}, {"truncated", truncated}, {"transactions", arr}};
+}
+
+static Json ai_axi_transactions_window(const Json& args, std::string& error) {
+    std::string name = args.value("name", std::string());
+    if (name.empty()) {
+        error = "AXI action requires args.name";
+        return Json();
+    }
+    npiFsdbTime begin = 0, end = 0;
+    if (!json_time_range(args, begin, end, error)) return Json();
+    if (!ensure_axi_analyzed_for_ai(name, error)) return Json();
+    std::vector<xwave::AxiContextTransaction> txns;
+    if (!g_axi_analyzer.get_transactions_in_range(name, begin, end, txns)) {
+        error = "AXI config not analyzed: " + name;
+        return Json();
+    }
+    int filter = direction_filter(args);
+    int limit = args.value("max_rows", args.value("limit", 1000));
+    Json arr = Json::array();
+    bool truncated = false;
+    for (const auto& item : txns) {
+        if (!item.txn) continue;
+        if (filter == 1 && !item.txn->is_write) continue;
+        if (filter == 2 && item.txn->is_write) continue;
+        if (limit >= 0 && static_cast<int>(arr.size()) >= limit) {
+            truncated = true;
+            break;
+        }
+        Json txn = axi_txn_to_json(item.txn);
+        txn["match_time"] = format_time(item.match_time);
+        txn["match_time_ps"] = item.match_time;
+        txn["latency_ps"] = item.txn->resp_time >= item.txn->addr_time ? item.txn->resp_time - item.txn->addr_time : 0;
+        arr.push_back(txn);
+    }
+    return Json{{"name", name}, {"begin", format_time(begin)}, {"end", format_time(end)},
+                {"transaction_count", arr.size()}, {"truncated", truncated}, {"transactions", arr}};
+}
+
+static Json ai_axi_latency_outlier(const Json& args, std::string& error) {
+    Json data = ai_axi_transactions_window(args, error);
+    if (!error.empty()) return Json();
+    Json txns = data["transactions"];
+    std::vector<Json> vec;
+    for (const auto& t : txns) vec.push_back(t);
+    std::sort(vec.begin(), vec.end(), [](const Json& a, const Json& b) {
+        return a.value("latency_ps", 0ULL) > b.value("latency_ps", 0ULL);
+    });
+    int top_n = args.value("top_n", 10);
+    Json out = Json::array();
+    for (size_t i = 0; i < vec.size() && static_cast<int>(i) < top_n; ++i) out.push_back(vec[i]);
+    data["outliers"] = out;
+    data.erase("transactions");
+    data["outlier_count"] = out.size();
+    return data;
+}
+
+static Json ai_axi_outstanding_timeline(const Json& args, std::string& error) {
+    std::string name = args.value("name", std::string());
+    if (name.empty()) {
+        error = "axi.outstanding_timeline requires args.name";
+        return Json();
+    }
+    npiFsdbTime begin = 0, end = 0;
+    if (!json_time_range(args, begin, end, error)) return Json();
+    if (!ensure_axi_analyzed_for_ai(name, error)) return Json();
+    std::vector<xwave::AxiOutstandingSample> samples;
+    if (!g_axi_analyzer.get_outstanding_samples_in_range(name, begin, end, samples)) {
+        error = "AXI config not analyzed: " + name;
+        return Json();
+    }
+    int limit = args.value("max_rows", args.value("limit", 1000));
+    int filter = direction_filter(args);
+    Json arr = Json::array();
+    bool truncated = false;
+    for (const auto& s : samples) {
+        if (limit >= 0 && static_cast<int>(arr.size()) >= limit) {
+            truncated = true;
+            break;
+        }
+        Json item;
+        item["time"] = format_time(s.time);
+        item["time_ps"] = s.time;
+        if (filter == 0 || filter == 2) item["read"] = s.read;
+        if (filter == 0 || filter == 1) item["write"] = s.write;
+        arr.push_back(item);
+    }
+    return Json{{"name", name}, {"sample_count", arr.size()}, {"truncated", truncated}, {"samples", arr}};
+}
+
+static Json ai_axi_channel_stall(const Json& args, std::string& error) {
+    std::string name = args.value("name", std::string());
+    std::string channel = args.value("channel", std::string("ar"));
+    xwave::AxiConfig cfg;
+    if (name.empty()) {
+        error = "axi.channel_stall requires args.name";
+        return Json();
+    }
+    if (!read_axi_from_registry(g_session_id, name.c_str(), cfg)) {
+        error = "AXI config not found: " + name;
+        return Json();
+    }
+    npiFsdbTime begin = 0, end = 0;
+    if (!json_time_range(args, begin, end, error)) return Json();
+    std::string valid, ready;
+    if (channel == "aw") { valid = cfg.awvalid; ready = cfg.awready; }
+    else if (channel == "w") { valid = cfg.wvalid; ready = cfg.wready; }
+    else if (channel == "b") { valid = cfg.bvalid; ready = cfg.bready; }
+    else if (channel == "r") { valid = cfg.rvalid; ready = cfg.rready; }
+    else { valid = cfg.arvalid; ready = cfg.arready; channel = "ar"; }
+    Json hargs;
+    hargs["clock"] = cfg.clk;
+    hargs["valid"] = valid;
+    hargs["ready"] = ready;
+    hargs["sampling"] = cfg.posedge ? "posedge" : "negedge";
+    hargs["time_range"] = args.value("time_range", Json::object());
+    hargs["rules"] = args.value("rules", Json::object());
+    hargs["max_samples"] = args.value("max_samples", 1000000);
+    Json data = ai_handshake_inspect(hargs, error);
+    if (!error.empty()) return Json();
+    data["name"] = name;
+    data["channel"] = channel;
+    return data;
+}
+
+static Json ai_dispatch_query(const Json& req, std::string& error) {
+    std::string action = req.value("action", std::string());
+    Json args = req.value("args", Json::object());
+    Json limits = req.value("limits", Json::object());
+    for (auto it = limits.begin(); it != limits.end(); ++it) {
+        if (!args.contains(it.key())) args[it.key()] = it.value();
+    }
+    if (action == "expr.eval_at") return ai_expr_eval_at(args, error);
+    if (action == "window.verify") return ai_window_verify(args, error);
+    if (action == "signal.changes") return ai_signal_changes(args, error);
+    if (action == "signal.stability") return ai_signal_stability(args, error);
+    if (action == "signal.trend") return ai_signal_trend(args, error);
+    if (action == "inspect_signal") return ai_inspect_signal(args, error);
+    if (action == "detect_anomaly") return ai_detect_anomaly(args, error);
+    if (action == "handshake.inspect") return ai_handshake_inspect(args, error);
+    if (action == "apb.transfer_window") return ai_apb_transfer_window(args, error);
+    if (action == "axi.request_response_pair") return ai_axi_transactions_window(args, error);
+    if (action == "axi.latency_outlier") return ai_axi_latency_outlier(args, error);
+    if (action == "axi.outstanding_timeline") return ai_axi_outstanding_timeline(args, error);
+    if (action == "axi.channel_stall") return ai_axi_channel_stall(args, error);
+    error = "Unsupported AI action in server: " + action;
+    return Json();
 }
 
 static std::string format_axi_count_json(size_t count) {
@@ -1529,6 +2374,26 @@ static bool handle_client(int client_fd, bool& should_quit) {
         } else {
             const char* err = ERROR_PREFIX "Usage: EVENT_FIND|EVENT_EXPORT <name> <begin> <end> <limit> <json|text> expr <expr>\n" END_MARKER;
             send_all(client_fd, err, strlen(err));
+        }
+        return true;
+    }
+
+    // Handle AI_QUERY <json>
+    if (strncmp(cmd, CMD_AI_QUERY, strlen(CMD_AI_QUERY)) == 0) {
+        const char* json_p = cmd + strlen(CMD_AI_QUERY);
+        while (*json_p == ' ' || *json_p == '\t') json_p++;
+        try {
+            Json req = Json::parse(json_p);
+            std::string error;
+            Json data = ai_dispatch_query(req, error);
+            if (!error.empty()) {
+                send_error(client_fd, error);
+            } else {
+                std::string resp = json_response(data);
+                send_all(client_fd, resp.c_str(), resp.length());
+            }
+        } catch (const std::exception& e) {
+            send_error(client_fd, std::string("Invalid AI_QUERY JSON: ") + e.what());
         }
         return true;
     }

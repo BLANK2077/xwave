@@ -90,7 +90,17 @@ tools/xwave-env ai actions
 }
 ```
 
-响应 envelope 固定包含 `ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta`。已实现 action 覆盖 `session/scope/value/list/apb/axi/event` 主要能力，并新增 `verify.conditions`、`expr.eval_at`。`window.verify`、`signal.changes`、`signal.stability`、`signal.trend`、`inspect_signal`、`detect_anomaly`、`handshake.inspect` 和协议级 P2 action 仍是 planned；后续实现必须用真实 FSDB 波形校验，不能只做 mock 或 schema 测试。
+响应 envelope 固定包含 `ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta`。已实现 action 覆盖 `session/scope/value/list/apb/axi/event` 主要能力，并支持 `verify.conditions`、`expr.eval_at`、`window.verify`、`signal.changes`、`signal.stability`、`signal.trend`、`inspect_signal`、`detect_anomaly`、`handshake.inspect`、`axi.channel_stall`、`axi.outstanding_timeline`、`axi.request_response_pair`、`axi.latency_outlier`、`apb.transfer_window`。
+
+常用 AI action 参数：
+- `window.verify`：`clock`、`sampling`、`time_range`、`conditions[]`；condition 使用 `expr/signals/mode`。
+- `signal.changes/stability`：`signal`、`time_range`、`limit`、`format`。
+- `signal.trend`：`signal`、`clock`、`sampling`、`time_range`。
+- `inspect_signal`：`signal`、`time_range`、`glitch_threshold`。
+- `detect_anomaly`：`signals[]`、`time_range`、`checks[]`，支持 `glitch/stuck/unknown_xz`。
+- `handshake.inspect`：`clock`、`valid`、`ready`、`data[]`、`time_range`、`rules`。
+- `axi.channel_stall/outstanding_timeline/request_response_pair/latency_outlier`：使用已加载 AXI `name`，可配 `time_range`、`direction`、`limit/max_rows`。
+- `apb.transfer_window`：使用已加载 APB `name`，可配 `time_range`、`direction`、`limit/max_rows`。
 
 ## 详细命令选项速查
 

@@ -941,4 +941,17 @@ bool AxiAnalyzer::get_transactions_in_range(const std::string& name,
     return true;
 }
 
+bool AxiAnalyzer::get_outstanding_samples_in_range(const std::string& name,
+                                                   npiFsdbTime begin,
+                                                   npiFsdbTime end,
+                                                   std::vector<AxiOutstandingSample>& out) const {
+    out.clear();
+    const AxiResult* r = get_result(name);
+    if (!r) return false;
+    for (const auto& sample : r->outstanding_samples) {
+        if (sample.time >= begin && sample.time <= end) out.push_back(sample);
+    }
+    return true;
+}
+
 } // namespace xwave
