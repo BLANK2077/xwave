@@ -1,479 +1,469 @@
 ---
 name: xwave
 description: >
-  Use whenever the user needs to query FSDB waveform files from the command line
-  without launching Verdi. Covers xwave — a CLI tool for reading signal values,
-  managing signal lists, finding waveform diffs, and analyzing APB/AXI/generic-event
-  interfaces. Also use when the user mentions xwave, xwave-env, fsdb query,
-  waveform CLI, xwave open/value/list/apb/axi/event/session, FSDB signal dump,
-  valid/ready handshake analysis, or APB/AXI transaction statistics from waveforms.
+  Use when an AI agent needs structured JSON access to FSDB waveform facts through xwave,
+  including sessions, scope discovery, values, signal lists, APB/AXI transactions,
+  generic events, condition checks, expression/window verification, signal inspection,
+  anomaly detection, handshake inspection, or protocol debug facts.
 ---
 
-# xwave — FSDB 波形命令行工具
+# xwave AI JSON Interface
 
-## 概述
+This skill is for AI agents using `xwave ai ...` as a structured waveform fact API. Prefer the AI JSON entry point over the human CLI whenever you need machine-readable output, deterministic errors, or multi-step debug evidence.
 
-xwave 是基于 Synopsys NPI 的 FSDB 命令行查询工具。无需启动 Verdi 即可在命令行：
-- 查询信号值
-- 管理信号列表、批量查询、定位差异
-- 发现 FSDB scope 下的真实信号路径
-- 统计分析 APB / AXI 接口事务
-- 按表达式查询 valid/ready/backpressure 通用事件
+Human-oriented legacy CLI details were moved to [references/cli-reference.md](references/cli-reference.md). Load that file only when the user explicitly asks about non-AI command syntax.
 
-同一个二进制文件 `xwave` 既是 CLI 客户端也是后台 Daemon（通过 Unix Domain Socket 通信）。
+## Entry Point
 
-## 环境
-
-- `$VERDI_HOME` 必须指向 Verdi 安装目录
-- 推荐用 `tools/xwave-env` 脚本代替直接调用 `xwave`——它会自动设置 `LD_LIBRARY_PATH`
+Use one of these forms:
 
 ```bash
-# 推荐方式
-tools/xwave-env <子命令> ...
-# 等价于先 export LD_LIBRARY_PATH 再直接调用 xwave
-```
-
-## 基本流程
-
-```bash
-# 1. 打开 FSDB
-tools/xwave-env open /path/to/wave.fsdb
-# → [Session 1] Ready (FSDB: 0 ~ 200000)
-
-# 2. 查询 / 分析
-tools/xwave-env value test_top.clk 10ns
-tools/xwave-env event if0.json -n if0 -s 1
-# ...
-
-# 3. 用完关闭
-tools/xwave-env session kill 1
-```
-
-## 通用选项
-
-| 选项 | 作用 | 适用命令 |
-|------|------|----------|
-| `-s <sid>` | 指定 Session ID，省略则用最新 | 几乎所有命令 |
-| `-b` | 二进制输出 | `value`, `list value` |
-| `-d` | 十进制输出 | `value`, `list value` |
-| `-json` | JSON 格式输出 | 多数查询命令 |
-| `-b <T>` | 开始时间 | `list diff`, `event find/export` |
-| `-e <T>` | 结束时间 | `list diff`, `event find/export` |
-| `-l <name>` | 指定信号列表名，省略则用最近修改的 | `list` 子命令 |
-| `-n <name>` | 指定配置名，省略则用最近修改的 | `apb`, `axi`, `event` 子命令 |
-
-时间格式：`us`/`ns`/`ps`/`fs` 后缀（不区分大小写），默认 `ns`。例如 `10ns`, `100us`, `500ps`。
-
-## AI JSON 入口
-
-面向 AI Agent 或脚本时优先使用 `xwave ai`，旧的人类 CLI 保持不变：
-
-```bash
-tools/xwave-env ai query <request.json>
+tools/xwave-env ai query request.json
 tools/xwave-env ai query -
-tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"value.at",...}'
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"value.at","target":{"fsdb":"waves.fsdb","auto_open":true},"args":{"signal":"top.clk","time":"10ns"}}'
 tools/xwave-env ai schema
 tools/xwave-env ai actions
 ```
 
-请求 envelope：
+Request envelope:
 
 ```json
 {
   "api_version": "xwave.ai.v1",
   "request_id": "optional-id",
   "action": "value.at",
-  "target": {"fsdb": "waves.fsdb", "auto_open": true},
+  "target": {
+    "fsdb": "/path/to/waves.fsdb",
+    "auto_open": true
+  },
   "args": {},
-  "limits": {},
+  "limits": {
+    "max_rows": 1000,
+    "max_events": 1000,
+    "max_samples": 1000000
+  },
   "output": {}
 }
 ```
 
-响应 envelope 固定包含 `ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta`。已实现 action 覆盖 `session/scope/value/list/apb/axi/event` 主要能力，并支持 `verify.conditions`、`expr.eval_at`、`window.verify`、`signal.changes`、`signal.stability`、`signal.trend`、`inspect_signal`、`detect_anomaly`、`handshake.inspect`、`axi.channel_stall`、`axi.outstanding_timeline`、`axi.request_response_pair`、`axi.latency_outlier`、`apb.transfer_window`。
+Response envelope always contains:
 
-常用 AI action 参数：
-- `window.verify`：`clock`、`sampling`、`time_range`、`conditions[]`；condition 使用 `expr/signals/mode`。
-- `signal.changes/stability`：`signal`、`time_range`、`limit`、`format`。
-- `signal.trend`：`signal`、`clock`、`sampling`、`time_range`。
-- `inspect_signal`：`signal`、`time_range`、`glitch_threshold`。
-- `detect_anomaly`：`signals[]`、`time_range`、`checks[]`，支持 `glitch/stuck/unknown_xz`。
-- `handshake.inspect`：`clock`、`valid`、`ready`、`data[]`、`time_range`、`rules`。
-- `axi.channel_stall/outstanding_timeline/request_response_pair/latency_outlier`：使用已加载 AXI `name`，可配 `time_range`、`direction`、`limit/max_rows`。
-- `apb.transfer_window`：使用已加载 APB `name`，可配 `time_range`、`direction`、`limit/max_rows`。
-
-## 详细命令选项速查
-
-### `open`
-
-| 位置/选项 | 作用 |
-|-----------|------|
-| `<fsdb-file>` | 要打开的 FSDB 文件。相对路径会规范化为 canonical path；同一 canonical FSDB 已有健康 Session 时会复用。 |
-
-`open` 会记录 FSDB 的 mtime/size/dev/inode。后续访问该 Session 时如果文件变化，xwave 会提示并自动重启 daemon，保留 Session ID。
-
-### `session`
-
-| 子命令/选项 | 作用 |
-|-------------|------|
-| `list` | 列出 Session ID、PID、RSS、创建时间、最后活跃时间和 FSDB 路径。 |
-| `doctor` | 检查 registry、FSDB fingerprint、进程、socket 和 PING/PONG 健康状态。 |
-| `gc` | 清理 stale Session 和超过 idle timeout 的 Session。 |
-| `kill <id>` | 停止指定 Session daemon，并删除对应 registry/config 清理项。 |
-| `kill all` | 停止并清理所有 Session。 |
-| `-s <sid>` | `doctor` 要诊断的 Session ID。 |
-| `-json` | `doctor` 输出 JSON，便于脚本判断。 |
-
-默认 idle timeout 是 1800 秒，可用 `XWAVE_IDLE_TIMEOUT_SEC` 覆盖。
-
-### `value`
-
-| 位置/选项 | 作用 |
-|-----------|------|
-| `<信号路径>` | FSDB 中的完整信号路径。 |
-| `<时间>` | 查询时间，支持 `us/ns/ps/fs`，默认 `ns`。 |
-| `-b` | 二进制输出。 |
-| `-d` | 十进制输出。 |
-| `-s <sid>` | 指定 Session；省略则使用最新 Session。 |
-
-默认输出为十六进制。
-
-### `list`
-
-| 子命令/选项 | 作用 |
-|-------------|------|
-| `new <列表名>` | 为当前 Session 创建信号列表。 |
-| `add <信号路径>` | 加入信号；写入前会 probe 信号存在性，失败则不污染列表。 |
-| `del <信号路径\|序号>` | 按信号路径或 `list show` 的 1-based 序号删除。 |
-| `show` | 显示列表内容和序号。 |
-| `value <时间>` | 查询列表内所有信号在指定时间的值。 |
-| `validate` | 校验列表内信号是否仍存在于当前 FSDB。 |
-| `diff` | 查找列表中至少两个信号值不全相等的最早时间。 |
-| `-l <列表名>` | 指定列表；省略则使用当前 Session 最近修改的列表。 |
-| `-s <sid>` | 指定 Session；省略则使用最新 Session。 |
-| `-b` | `list value` 二进制输出。 |
-| `-d` | `list value` 十进制输出。 |
-| `-json` | `list value` / `list validate` 输出 JSON。 |
-| `-b <T>` | `list diff` 开始时间，默认 0。 |
-| `-e <T>` | `list diff` 结束时间，默认波形结束。 |
-
-`list value` 遇到旧列表里的无效信号会显示 `NOT_FOUND` 并返回非零。`list diff` 至少需要 2 个信号。
-
-### `scope`
-
-| 位置/选项 | 作用 |
-|-----------|------|
-| `<scope路径>` | 要列出的 FSDB scope。 |
-| `-recursive` | 递归列出子 scope 下的信号。 |
-| `-json` | JSON 输出。 |
-| `-s <sid>` | 指定 Session；省略则使用最新 Session。 |
-
-`scope` 用于确认 VCS FSDB 中真实 signal path，特别是数组、generate scope、层次名被展开后的形态。
-
-### `apb`
-
-| 子命令/选项 | 作用 |
-|-------------|------|
-| `<json文件> -n <配置名>` | 加载 APB 配置并持久化。 |
-| `list` | 查看指定 APB 配置；省略 `-n` 时查看最近配置。 |
-| `wr` / `rd` | 查询 APB 写/读事务数量或指定事务。 |
-| `begin` | 游标定位到第一条匹配事务。 |
-| `next` | 游标移动到下一条匹配事务。 |
-| `pre` | 游标移动到上一条匹配事务。 |
-| `last` | 游标定位到最后一条匹配事务。 |
-| `-n <配置名>` | 配置名；加载时必需，查询时省略则使用最近配置。 |
-| `-s <sid>` | 指定 Session；省略则使用最新 Session。 |
-| `-addr <addr>` | 按地址过滤，支持十六进制或十进制。 |
-| `-num <x>` | 选择第 x 条匹配事务，1-based。 |
-| `-last` | 选择最后一条匹配事务。 |
-| `-rd` | 游标命令只看读事务。 |
-| `-wr` | 游标命令只看写事务。 |
-| `-json` | JSON 输出。 |
-
-APB JSON 必需字段：`paddr/pwdata/prdata/pwrite/penable/psel/clk/rst_n`；`edge` 可选，默认 `posedge`。
-
-### `axi`
-
-| 子命令/选项 | 作用 |
-|-------------|------|
-| `<json文件> -n <配置名>` | 加载 AXI 配置并持久化。 |
-| `list` | 查看指定 AXI 配置；省略 `-n` 时查看最近配置。 |
-| `wr` / `rd` | 查询 AXI 写/读事务数量或指定事务。 |
-| `begin` / `next` / `pre` / `last` | 游标遍历事务。 |
-| `latency` | 统计读/写事务延迟。 |
-| `osd` | 统计 outstanding 深度。 |
-| `-n <配置名>` | 配置名；加载时必需，查询时省略则使用最近配置。 |
-| `-s <sid>` | 指定 Session；省略则使用最新 Session。 |
-| `-addr <addr>` | 按地址过滤，支持十六进制或十进制。 |
-| `-id <id>` | 按 AXI ID 过滤，支持十六进制或十进制。 |
-| `-num <x>` | 选择第 x 条匹配事务，1-based。 |
-| `-last` | 选择最后一条匹配事务。 |
-| `-rd` | 只看读事务。 |
-| `-wr` | 只看写事务。 |
-| `-all` | `latency/osd` 同时统计读写事务；默认行为。 |
-| `-json` | JSON 输出。 |
-
-AXI JSON 需要完整 5 通道信号、`clk`、`rst_n`；`edge` 可选，默认 `posedge`。
-
-### `event`
-
-| 子命令/选项 | 作用 |
-|-------------|------|
-| `<json文件> -n <配置名>` | 加载通用 event 配置并绑定当前 Session 的 FSDB。 |
-| `list` | 不带 `-n` 时列出当前 FSDB 下的 event 配置名；带 `-n` 时打印该配置。 |
-| `find` | 返回第一条表达式为 true 的 event。 |
-| `export` | 导出匹配 event 列表，默认最多 1000 条。 |
-| `-n <配置名>` | event 配置名；加载/find/export 必需。 |
-| `-s <sid>` | 指定 Session；省略则使用最新 Session。 |
-| `-expr <表达式>` | 事件表达式，支持 alias、field、`!`、`&&`、`||`、`==`、`!=`、括号和常量。 |
-| `-b <T>` | 查询开始时间，默认 0。 |
-| `-e <T>` | 查询结束时间，默认波形结束。 |
-| `-limit N` | `export` 最大输出条数；默认 1000，非正数表示不限制。 |
-| `-context <T>` | 对每个 event 附带 `[event_time - T, event_time + T]` 内的协议事务上下文。 |
-| `-axi <配置名>` | 在 context 中附带 AXI 事务；必须和 `-context` 同时使用。 |
-| `-apb <配置名>` | 在 context 中附带 APB 事务；必须和 `-context` 同时使用。 |
-| `-json` | JSON 输出；context 模式下会增加 `context.axi` / `context.apb` 字段。 |
-
-`-context` 必须搭配至少一个 `-axi` 或 `-apb`；`-axi/-apb` 不能脱离 `-context` 单独使用。表达式会在扫描前做语法和 alias 校验；含 `x/z` 的比较结果为 unknown，最终不会匹配 event。
-
----
-
-## 子命令参考
-
-### open — 打开 FSDB
-
-```bash
-xwave open <fsdb-file>
+```text
+ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta
 ```
 
-输出 Session ID 和时间范围。`open` 会规范化 FSDB 路径；同一文件已有健康 Session 时会复用。Session 会记录 FSDB 的 mtime/size/dev/inode，后续查询发现文件变化时会保留 Session ID 并自动重启 daemon。
+AI usage rules:
+- Start with `session.open` for repeated work, then use `target.session_id`.
+- For one-shot queries, use `target.fsdb + auto_open:true`.
+- Always inspect `ok` and `error.code`; do not parse human text.
+- Treat `known:false`, `status:"unknown"`, and `pass:null` as inconclusive waveform facts, not failures.
+- Use `scope.list` after `SIGNAL_NOT_FOUND`.
+- Use `limits.max_rows/max_events/max_samples` for broad scans.
+- Load APB/AXI/Event configs before protocol or event actions.
 
-### value — 单信号值查询
+## Session Actions
 
-```bash
-xwave value <信号路径> <时间> [-b|-d] [-s <sid>]
-```
+### `session.open`
 
-默认十六进制 (`'h...`)，`-b` 二进制 (`'b...`)，`-d` 十进制 (`'d...`)。
-
-### session — 会话管理
-
-```bash
-xwave session list                      # 列出所有 Session
-xwave session doctor -s <sid> [-json]   # 诊断健康状态
-xwave session gc                        # 清理 stale/idle Session
-xwave session kill <id|all>             # 关闭 Session
-```
-
-默认 idle timeout 为 1800 秒，可通过 `XWAVE_IDLE_TIMEOUT_SEC` 覆盖。
-
-### list — 信号列表
-
-```bash
-xwave list new <列表名> [-s <sid>]
-xwave list add <信号路径> [-s <sid>] [-l <列表名>]
-xwave list del <信号路径|序号> [-s <sid>] [-l <列表名>]
-xwave list show [-s <sid>] [-l <列表名>]
-xwave list value <时间> [-l <列表名>] [-b|-d] [-json] [-s <sid>]
-xwave list validate [-l <列表名>] [-json] [-s <sid>]
-xwave list diff [-l <列表名>] [-b <T>] [-e <T>] [-s <sid>]
-```
-
-`list add` 会校验信号是否存在；`list value` 遇到旧 List 中的无效信号会输出 `NOT_FOUND` 并返回非零。
-
-`list diff` 找到时间范围内最早一个值不全相等的时刻，需要列表中至少 2 个信号。
-
-### scope — 信号发现
-
-```bash
-xwave scope <scope路径> [-recursive] [-json] [-s <sid>]
-```
-
-用于列出 FSDB 中指定 scope 下的信号名，适合排查 VCS 对 SystemVerilog 数组、generate scope 的实际命名。
-
-### apb — APB 接口
-
-**配置文件格式 (JSON)：**
+Open or reuse a session for an FSDB. Use this once at the start of a multi-step debug.
 
 ```json
-{
-  "paddr":   "test_top.apb.paddr",
-  "pwdata":  "test_top.apb.pwdata",
-  "prdata":  "test_top.apb.prdata",
-  "pwrite":  "test_top.apb.pwrite",
-  "penable": "test_top.apb.penable",
-  "psel":    "test_top.apb.psel",
-  "clk":     "test_top.clk",
-  "rst_n":   "test_top.rst_n",
-  "edge":    "posedge"
-}
+{"api_version":"xwave.ai.v1","action":"session.open","target":{"fsdb":"/path/to/waves.fsdb"}}
 ```
 
-- 前 8 个字段必需，`edge` 可选（默认 `"posedge"`，也可 `"negedge"`）
-- 所有值都是 FSDB 中的完整信号路径
+### `session.list`
 
-**命令：**
-
-```bash
-xwave apb <json文件> -n <配置名> [-s <sid>]       # 加载配置
-xwave apb list [-n <配置名>] [-s <sid>]           # 查看配置
-xwave apb wr|rd [-n <名>] [-addr <a>] [-num <x>] [-last] [-json] [-s <sid>]
-xwave apb begin|next|pre|last [-rd|-wr] [-json] [-n <名>] [-s <sid>]
-```
-
-- `wr`/`rd` 统计写/读事务数；加 `-addr` 过滤地址；加 `-num N` 查第 N 次；加 `-last` 查最后一次
-- `begin`/`next`/`pre`/`last` 游标遍历，`-wr`/`-rd` 过滤方向
-
-### axi — AXI 接口
-
-配置文件需要完整的 AXI5 5 通道信号（30 个信号 + clk/rst_n/edge）。
-
-**命令：**
-
-```bash
-xwave axi <json文件> -n <配置名> [-s <sid>]       # 加载配置
-xwave axi list [-n <配置名>] [-s <sid>]           # 查看配置
-xwave axi wr|rd [-n <名>] [-addr <a>] [-id <id>] [-num <x>] [-last] [-json] [-s <sid>]
-xwave axi begin|next|pre|last [-rd|-wr] [-json] [-n <名>] [-s <sid>]
-xwave axi latency|osd [-rd|-wr|-all] [-id <id>] [-json] [-n <名>] [-s <sid>]
-```
-
-- `latency` 统计读/写延迟，`osd` 统计 outstanding 数量
-- `-rd`/`-wr`/`-all` 过滤方向，`-all` 为默认
-
-### event — 通用事件
-
-适用于 valid/ready/backpressure 风格接口，在时钟边沿采样并对表达式求值。event 配置绑定到当前 Session 打开的 FSDB；如果重新打开了不同波形，需要重新加载 event JSON。
-
-**配置文件格式 (JSON)：**
+List known sessions. Use before reusing an existing session.
 
 ```json
-{
-  "clk":   "xif_tb_top.clk",
-  "rst_n": "xif_tb_top.rst_n",
-  "edge":  "posedge",
-  "signals": {
-    "vld": "xif_tb_top.if0.vld",
-    "rdy": "xif_tb_top.if0.rdy",
-    "bp":  "xif_tb_top.if0.bp",
-    "pd":  "xif_tb_top.if0.pd"
-  },
-  "fields": {
-    "opcode": "pd[23:16]",
-    "data":   "pd[15:0]"
-  }
-}
+{"api_version":"xwave.ai.v1","action":"session.list"}
 ```
 
-- `clk` 和 `signals` 必需；`rst_n` 可选（不配则无复位门控）；`edge` 可选（默认 `posedge`，只能取 `posedge`/`negedge`）
-- `signals`：键 = 别名，值 = FSDB 完整路径
-- `fields`：可选，定义位段别名。格式 `"<signal_alias>[<high>:<low>]"`，也支持 `{"signal": "...", "left": N, "right": M}` 对象格式；位段必须是非负整数，且 signal alias 必须已在 `signals` 中定义
+### `session.doctor`
 
-**表达式语法：**
+Check daemon, socket, PID, FSDB fingerprint, and health for a session.
 
-| 元素 | 示例 |
-|------|------|
-| 信号别名 | `vld`, `rdy`, `bp` |
-| 字段别名 | `opcode`, `data` |
-| 逻辑运算 | `&&`, `||`, `!` |
-| 比较运算 | `==`, `!=` |
-| 常量 | `0b1010`, `0xff`, `'hff`, `10` |
-| 括号 | `(vld || rdy) && !bp` |
-
-典型表达式：
-- `vld && rdy` — handshake 完成
-- `vld && !bp` — 有效且无背压
-- `vld && opcode == 0x5a` — 特定 opcode
-- `vld && rdy && data == 0xa55a` — 特定 payload
-
-**命令：**
-
-```bash
-xwave event <json文件> -n <配置名> [-s <sid>]     # 加载配置
-xwave event list [-n <配置名>] [-s <sid>]         # 查看配置
-xwave event find -n <名> -expr <表达式> [-b <T>] [-e <T>] [-context <T> [-axi <名>] [-apb <名>]] [-json] [-s <sid>]
-xwave event export -n <名> -expr <表达式> [-b <T>] [-e <T>] [-limit N] [-context <T> [-axi <名>] [-apb <名>]] [-json] [-s <sid>]
+```json
+{"api_version":"xwave.ai.v1","action":"session.doctor","target":{"session_id":1}}
 ```
 
-- `find` 返回第一个匹配事件
-- `export` 导出匹配事件，未指定 `-limit` 时默认最多 1000 条；用 `-limit` 覆盖数量
-- `-context <T>` 可搭配 `-axi <名>`、`-apb <名>` 或二者同时使用，在每条 event 前后 `T` 时间窗口内附带协议事务上下文
-- 表达式会先做语法和 alias 校验；含 `x/z` 的比较结果为 unknown，不会作为匹配事件
-- 旧版 `.xwave.events` 缺少 FSDB 绑定信息时不会被复用，重新加载配置即可迁移
+### `session.gc`
 
----
+Clean stale or idle sessions.
 
-## 典型场景
-
-### 快速查信号值
-
-```bash
-tools/xwave-env open my_wave.fsdb
-tools/xwave-env value test_top.clk 10ns
-tools/xwave-env value test_top.rst_n 5ns -b
-tools/xwave-env value test_top.cnt 100ns -d
+```json
+{"api_version":"xwave.ai.v1","action":"session.gc"}
 ```
 
-### 批量监控一组信号
+### `session.kill`
 
-```bash
-tools/xwave-env list new my_signals
-tools/xwave-env list add test_top.clk -l my_signals
-tools/xwave-env list add test_top.rst_n -l my_signals
-tools/xwave-env list add test_top.cnt -l my_signals
-tools/xwave-env list value 100ns -l my_signals
-tools/xwave-env list diff -l my_signals -b 10ns -e 50ns
+Stop one session or all sessions.
+
+```json
+{"api_version":"xwave.ai.v1","action":"session.kill","args":{"id":"all"}}
 ```
 
-### APB 寄存器访问统计
+## Scope And Value Actions
 
-```bash
-tools/xwave-env apb apb_cfg.json -n my_apb
-tools/xwave-env apb wr -n my_apb            # 总写次数
-tools/xwave-env apb rd -n my_apb            # 总读次数
-tools/xwave-env apb wr -n my_apb -addr 0x100  # 特定地址
-tools/xwave-env apb wr -n my_apb -addr 0x100 -num 3 -json  # 第3次
-tools/xwave-env apb begin -n my_apb -wr -json  # 游标定位第一次写
-tools/xwave-env apb next -n my_apb -wr -json   # 下一个写
+### `scope.list`
+
+List available FSDB signals under a scope. Use this to recover from missing or ambiguous paths.
+
+```json
+{"api_version":"xwave.ai.v1","action":"scope.list","target":{"session_id":1},"args":{"path":"top.u_dut","recursive":true},"limits":{"max_rows":200}}
 ```
 
-### AXI 性能分析
+### `value.at`
 
-```bash
-tools/xwave-env axi axi_cfg.json -n my_axi
-tools/xwave-env axi wr -n my_axi              # 写事务总数
-tools/xwave-env axi rd -n my_axi -id 0x3      # 特定 ID
-tools/xwave-env axi latency -n my_axi -rd -json   # 读延迟统计
-tools/xwave-env axi osd -n my_axi -wr -json       # 写 outstanding
+Read one signal at one time. Use for point evidence.
+
+```json
+{"api_version":"xwave.ai.v1","action":"value.at","target":{"session_id":1},"args":{"signal":"top.u_dut.ready","time":"42us","format":"hex"}}
 ```
 
-### valid/ready 握手事件
+### `value.batch_at`
 
-```bash
-tools/xwave-env event if0.event.json -n if0
-tools/xwave-env event export -n if0 -expr "vld && rdy" -json
-tools/xwave-env event export -n if0 -expr "vld && !bp" -limit 10 -json
-tools/xwave-env event find -n if0 -expr "vld && !bp" -context 200ns -axi axi0 -apb apb0 -json
-tools/xwave-env event export -n if0 -expr "vld && opcode == 0x10" -json
-tools/xwave-env event find -n if0 -expr "vld && rdy && data != 0" -json
+Read many signals at the same time. Prefer this over many `value.at` calls.
+
+```json
+{"api_version":"xwave.ai.v1","action":"value.batch_at","target":{"session_id":1},"args":{"time":"42us","signals":["top.u_dut.valid","top.u_dut.ready","top.u_dut.fifo_full"],"format":"hex"}}
 ```
 
-### Session 维护
+## Signal List Actions
 
-```bash
-tools/xwave-env session list
-tools/xwave-env session doctor -s 1
-tools/xwave-env session doctor -s 1 -json
-tools/xwave-env session kill 1
-tools/xwave-env session kill all
+### `list.create`
+
+Create a named signal list.
+
+```json
+{"api_version":"xwave.ai.v1","action":"list.create","target":{"session_id":1},"args":{"name":"if0"}}
 ```
 
----
+### `list.add`
 
-## 注意事项
+Add a signal after probing that it exists.
 
-- **信号路径必须与 FSDB 中完全一致**，含完整层级（如 `test_top.u_data_gen.cnt_a`）
-- 不指定 `-s` 时自动用最新 Session；不指定 `-l`/`-n` 时自动用最近修改的列表/配置
-- `list diff` 需至少 2 个信号
-- Session 以后台 daemon 运行，终端关闭不影响；用 `session kill` 清理
-- 默认输出为十六进制，无 `0x` 前缀，格式为 `'h...`
+```json
+{"api_version":"xwave.ai.v1","action":"list.add","target":{"session_id":1},"args":{"name":"if0","signal":"top.u_dut.valid"}}
+```
+
+### `list.delete`
+
+Remove by signal path or list index.
+
+```json
+{"api_version":"xwave.ai.v1","action":"list.delete","target":{"session_id":1},"args":{"name":"if0","index":"2"}}
+```
+
+### `list.show`
+
+Show list members.
+
+```json
+{"api_version":"xwave.ai.v1","action":"list.show","target":{"session_id":1},"args":{"name":"if0"}}
+```
+
+### `list.value_at`
+
+Read all list signals at one time.
+
+```json
+{"api_version":"xwave.ai.v1","action":"list.value_at","target":{"session_id":1},"args":{"name":"if0","time":"42us","format":"binary"}}
+```
+
+### `list.validate`
+
+Check whether every signal in a list exists in the current FSDB.
+
+```json
+{"api_version":"xwave.ai.v1","action":"list.validate","target":{"session_id":1},"args":{"name":"if0"}}
+```
+
+### `list.diff`
+
+Find the earliest time where list values are not all equal.
+
+```json
+{"api_version":"xwave.ai.v1","action":"list.diff","target":{"session_id":1},"args":{"name":"if0","begin":"0ns","end":"100us"}}
+```
+
+## APB Actions
+
+### `apb.config.load`
+
+Load and persist an APB config. `config_path` points to JSON, or `config` may inline the object.
+
+```json
+{"api_version":"xwave.ai.v1","action":"apb.config.load","target":{"session_id":1},"args":{"name":"apb0","config_path":"apb.json"}}
+```
+
+### `apb.config.list`
+
+Return the saved APB config.
+
+```json
+{"api_version":"xwave.ai.v1","action":"apb.config.list","target":{"session_id":1},"args":{"name":"apb0"}}
+```
+
+### `apb.query`
+
+Query APB reads or writes. Use `direction:"wr"` or `direction:"rd"`, with optional `address`, `num`, or `last`.
+
+```json
+{"api_version":"xwave.ai.v1","action":"apb.query","target":{"session_id":1},"args":{"name":"apb0","direction":"wr","address":"0x100","num":1}}
+```
+
+### `apb.cursor`
+
+Iterate APB transactions with `op:"begin"`, `next`, `pre`, or `last`.
+
+```json
+{"api_version":"xwave.ai.v1","action":"apb.cursor","target":{"session_id":1},"args":{"name":"apb0","op":"begin","direction":"all"}}
+```
+
+### `apb.transfer_window`
+
+Return APB transactions whose transfer time is inside a time range.
+
+```json
+{"api_version":"xwave.ai.v1","action":"apb.transfer_window","target":{"session_id":1},"args":{"name":"apb0","time_range":{"begin":"40us","end":"45us"},"direction":"all","limit":50}}
+```
+
+## AXI Actions
+
+### `axi.config.load`
+
+Load and persist an AXI config. Use a full five-channel config with `clk`, `rst_n`, and optional `edge`.
+
+```json
+{"api_version":"xwave.ai.v1","action":"axi.config.load","target":{"session_id":1},"args":{"name":"axi0","config_path":"axi.json"}}
+```
+
+### `axi.config.list`
+
+Return the saved AXI config.
+
+```json
+{"api_version":"xwave.ai.v1","action":"axi.config.list","target":{"session_id":1},"args":{"name":"axi0"}}
+```
+
+### `axi.query`
+
+Query AXI reads or writes. Use optional `address`, `id`, `num`, or `last`.
+
+```json
+{"api_version":"xwave.ai.v1","action":"axi.query","target":{"session_id":1},"args":{"name":"axi0","direction":"rd","id":"0x3","num":1}}
+```
+
+### `axi.cursor`
+
+Iterate AXI transactions with `op:"begin"`, `next`, `pre`, or `last`.
+
+```json
+{"api_version":"xwave.ai.v1","action":"axi.cursor","target":{"session_id":1},"args":{"name":"axi0","op":"next","direction":"rd"}}
+```
+
+### `axi.analysis`
+
+Return AXI latency or outstanding statistics. Use `analysis:"latency"` or `analysis:"osd"` and optional `direction` or `id`.
+
+```json
+{"api_version":"xwave.ai.v1","action":"axi.analysis","target":{"session_id":1},"args":{"name":"axi0","analysis":"latency","direction":"all"}}
+```
+
+### `axi.channel_stall`
+
+Inspect one AXI channel valid/ready stall behavior. Channels: `aw`, `w`, `b`, `ar`, `r`.
+
+```json
+{"api_version":"xwave.ai.v1","action":"axi.channel_stall","target":{"session_id":1},"args":{"name":"axi0","channel":"r","time_range":{"begin":"40us","end":"45us"},"rules":{"max_wait_cycles":16}}}
+```
+
+### `axi.outstanding_timeline`
+
+Return outstanding samples over a window. Use for buildup/root-cause evidence.
+
+```json
+{"api_version":"xwave.ai.v1","action":"axi.outstanding_timeline","target":{"session_id":1},"args":{"name":"axi0","time_range":{"begin":"40us","end":"45us"},"direction":"all","limit":100}}
+```
+
+### `axi.request_response_pair`
+
+Return AXI transactions whose request or response time is inside a window.
+
+```json
+{"api_version":"xwave.ai.v1","action":"axi.request_response_pair","target":{"session_id":1},"args":{"name":"axi0","time_range":{"begin":"40us","end":"45us"},"direction":"rd","limit":20}}
+```
+
+### `axi.latency_outlier`
+
+Return transactions with largest request-response latency.
+
+```json
+{"api_version":"xwave.ai.v1","action":"axi.latency_outlier","target":{"session_id":1},"args":{"name":"axi0","time_range":{"begin":"0ns","end":"100us"},"direction":"all","top_n":5,"limit":500}}
+```
+
+## Event Actions
+
+### `event.config.load`
+
+Load and persist a generic event config bound to the current FSDB.
+
+```json
+{"api_version":"xwave.ai.v1","action":"event.config.load","target":{"session_id":1},"args":{"name":"if0","config_path":"if0.event.json"}}
+```
+
+### `event.config.list`
+
+List event configs or return one config.
+
+```json
+{"api_version":"xwave.ai.v1","action":"event.config.list","target":{"session_id":1},"args":{"name":"if0"}}
+```
+
+### `event.find`
+
+Find the first clock-sampled event matching an expression.
+
+```json
+{"api_version":"xwave.ai.v1","action":"event.find","target":{"session_id":1},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"40us","end":"45us"}}}
+```
+
+With protocol context:
+
+```json
+{"api_version":"xwave.ai.v1","action":"event.find","target":{"session_id":1},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"40us","end":"45us"},"context":{"window":"200ns","axi":"axi0","apb":"apb0"}}}
+```
+
+### `event.export`
+
+Export matching events. Always set a limit unless you intentionally need a large scan.
+
+```json
+{"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":1},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"40us","end":"45us"},"limit":100}}
+```
+
+## Wave Fact Verification Actions
+
+### `verify.conditions`
+
+Check point-time conditions. Use this to verify hypotheses generated from RTL or protocol reasoning.
+
+```json
+{"api_version":"xwave.ai.v1","action":"verify.conditions","target":{"session_id":1},"args":{"time":"42us","conditions":[{"signal":"top.u_dut.fifo_full","op":"==","value":"1"},{"signal":"top.u_dut.state","op":"!=","value":"0"}]}}
+```
+
+### `expr.eval_at`
+
+Evaluate a Boolean expression at one time using aliases.
+
+```json
+{"api_version":"xwave.ai.v1","action":"expr.eval_at","target":{"session_id":1},"args":{"time":"42us","signals":{"valid":"top.u_dut.valid","ready":"top.u_dut.ready"},"expr":"valid && !ready"}}
+```
+
+### `window.verify`
+
+Verify expressions sampled on clock edges over a window. `mode` may be `always`, `never`, or `eventually`.
+
+```json
+{"api_version":"xwave.ai.v1","action":"window.verify","target":{"session_id":1},"args":{"clock":"top.clk","sampling":"posedge","time_range":{"begin":"42us","end":"44us"},"conditions":[{"expr":"valid && !ready","signals":{"valid":"top.u_dut.valid","ready":"top.u_dut.ready"},"mode":"always"}]}}
+```
+
+### `signal.changes`
+
+Return value changes for a signal in a range.
+
+```json
+{"api_version":"xwave.ai.v1","action":"signal.changes","target":{"session_id":1},"args":{"signal":"top.u_dut.fifo_full","time_range":{"begin":"40us","end":"45us"},"limit":20,"format":"binary"}}
+```
+
+### `signal.stability`
+
+Check whether a signal remains stable in a range.
+
+```json
+{"api_version":"xwave.ai.v1","action":"signal.stability","target":{"session_id":1},"args":{"signal":"top.u_dut.active_count","time_range":{"begin":"42us","end":"44us"}}}
+```
+
+### `signal.trend`
+
+Sample a numeric signal on clock edges and summarize monotonicity, min, max, and stable state.
+
+```json
+{"api_version":"xwave.ai.v1","action":"signal.trend","target":{"session_id":1},"args":{"signal":"top.u_dut.active_count","clock":"top.clk","sampling":"posedge","time_range":{"begin":"40us","end":"45us"},"max_samples":10000}}
+```
+
+### `inspect_signal`
+
+Summarize signal transitions, period-like intervals, and glitches.
+
+```json
+{"api_version":"xwave.ai.v1","action":"inspect_signal","target":{"session_id":1},"args":{"signal":"top.clk","time_range":{"begin":"0ns","end":"1us"},"glitch_threshold":"1ns","limit":1000}}
+```
+
+### `detect_anomaly`
+
+Find waveform anomalies such as glitches, stuck values, and x/z.
+
+```json
+{"api_version":"xwave.ai.v1","action":"detect_anomaly","target":{"session_id":1},"args":{"signals":["top.u_dut.ready","top.u_dut.valid","top.u_dut.data"],"time_range":{"begin":"0ns","end":"100us"},"checks":[{"type":"glitch","min_pulse_width":"1ns"},{"type":"stuck","min_duration":"1us"},{"type":"unknown_xz"}],"max_findings":50}}
+```
+
+### `handshake.inspect`
+
+Analyze a generic valid/ready interface sampled on a clock.
+
+```json
+{"api_version":"xwave.ai.v1","action":"handshake.inspect","target":{"session_id":1},"args":{"clock":"top.clk","valid":"top.u_dut.valid","ready":"top.u_dut.ready","data":["top.u_dut.data"],"time_range":{"begin":"40us","end":"45us"},"rules":{"max_wait_cycles":100,"check_data_stable_when_stalled":true}}}
+```
+
+## Recommended AI Workflows
+
+### Point fact verification
+
+1. `session.open`
+2. `value.batch_at`
+3. If missing signal: `scope.list`
+4. Store `data.values[]` as evidence.
+
+### Valid/ready stall debug
+
+1. `handshake.inspect` for generic interfaces, or `axi.channel_stall` for AXI channels.
+2. Use `value.batch_at` at stall begin/mid/end for related control signals.
+3. Use `window.verify` to prove the blocking condition persists.
+4. Use `event.find` or `event.export` when you need exact event samples.
+
+### Protocol context around an event
+
+1. `axi.config.load` and/or `apb.config.load`
+2. `event.config.load`
+3. `event.find` with `context.window` plus `context.axi` and/or `context.apb`
+4. Use returned transactions and `delta_ps` as evidence.
+
+### Performance-safe scanning
+
+Use bounded ranges and limits:
+
+```json
+{"limits":{"max_rows":100,"max_events":100,"max_samples":100000}}
+```
+
+Prefer:
+- `value.batch_at` over repeated `value.at`
+- `event.find` before `event.export`
+- `axi.channel_stall` before full AXI transaction inspection
+- `signal.stability` before full `signal.changes`
+
+## Error Handling
+
+Common `error.code` values:
+
+| Code | AI response |
+|---|---|
+| `SIGNAL_NOT_FOUND` | Run `scope.list` near the parent scope and retry with a candidate path. |
+| `SESSION_NOT_FOUND` / `SESSION_UNHEALTHY` | Run `session.list`, `session.doctor`, or reopen the FSDB. |
+| `INVALID_REQUEST` / `MISSING_FIELD` | Fix the JSON request shape before retrying. |
+| `EXPR_PARSE_FAILED` | Simplify or validate aliases in the expression. |
+| `WAVE_QUERY_FAILED` | Check FSDB, config binding, and time range. |
+
+If `ok:false`, do not use `data` as evidence. If `ok:true` but a value has `known:false`, preserve it as unknown evidence rather than converting it to pass/fail.
