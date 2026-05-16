@@ -1,4 +1,7 @@
 #include "apb_manager.h"
+#include "../common/xwave_paths.h"
+#include "../json.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -8,10 +11,9 @@
 
 namespace xwave {
 
+using Json = nlohmann::ordered_json;
+
 ApbManager::ApbManager() {
-    const char* home = getenv("HOME");
-    if (!home) home = "/tmp";
-    snprintf(apbs_path_, sizeof(apbs_path_), "%s/.xwave.apb", home);
 }
 
 ApbManager::~ApbManager() {
@@ -25,8 +27,38 @@ static bool unlock_file(int fd) {
     return flock(fd, LOCK_UN) == 0;
 }
 
-bool ApbManager::parse_line(const char* line, ApbConfig& config, int& session_id) {
-    char buf[11][1024];
+static Json apb_to_json(const ApbConfig& c) {
+    return {
+        {"name", c.name},
+        {"paddr", c.paddr},
+        {"pwdata", c.pwdata},
+        {"prdata", c.prdata},
+        {"pwrite", c.pwrite},
+        {"penable", c.penable},
+        {"psel", c.psel},
+        {"clk", c.clk},
+        {"rst_n", c.rst_n},
+        {"edge", c.posedge ? "posedge" : "negedge"}
+    };
+}
+
+static bool json_to_apb(const Json& j, ApbConfig& c) {
+    if (!j.is_object()) return false;
+    c.name = j.value("name", "");
+    c.paddr = j.value("paddr", "");
+    c.pwdata = j.value("pwdata", "");
+    c.prdata = j.value("prdata", "");
+    c.pwrite = j.value("pwrite", "");
+    c.penable = j.value("penable", "");
+    c.psel = j.value("psel", "");
+    c.clk = j.value("clk", "");
+    c.rst_n = j.value("rst_n", "");
+    c.posedge = j.value("edge", "posedge") != "negedge";
+    return !c.name.empty();
+}
+
+bool ApbManager::parse_legacy_line(const char* line, ApbConfig& config, int& session_id) {
+    char buf[10][1024];
     int n = sscanf(line, "%d|%1023[^|]|%1023[^|]|%1023[^|]|%1023[^|]|%1023[^|]|%1023[^|]|%1023[^|]|%1023[^|]|%1023[^|]|%1023[^|\n]",
                    &session_id,
                    buf[0], buf[1], buf[2], buf[3], buf[4],
@@ -45,109 +77,112 @@ bool ApbManager::parse_line(const char* line, ApbConfig& config, int& session_id
     return true;
 }
 
-std::string ApbManager::config_to_line(int session_id, const ApbConfig& config) {
-    return std::to_string(session_id) + "|" + config.name + "|" + config.paddr + "|" +
-           config.pwdata + "|" + config.prdata + "|" + config.pwrite + "|" +
-           config.penable + "|" + config.psel + "|" + config.clk + "|" +
-           config.rst_n + "|" + (config.posedge ? "posedge" : "negedge") + "\n";
+bool ApbManager::migrate_legacy(int session_id, std::vector<ApbConfig>& configs) {
+    configs.clear();
+    if (!xwave_legacy_registry_has_session(session_id)) return false;
+
+    int fd = open(xwave_legacy_apb_path().c_str(), O_RDONLY);
+    if (fd < 0) return false;
+    FILE* fp = fdopen(fd, "r");
+    if (!fp) {
+        close(fd);
+        return false;
+    }
+    char line[4096];
+    while (fgets(line, sizeof(line), fp)) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+        ApbConfig config;
+        int sid = 0;
+        if (parse_legacy_line(line, config, sid) && sid == session_id) configs.push_back(config);
+    }
+    fclose(fp);
+    if (!configs.empty()) save_session(session_id, configs);
+    return true;
 }
 
-bool ApbManager::load_all(std::vector<ApbConfig>& configs, std::vector<int>& session_ids) {
+bool ApbManager::load_session(int session_id, std::vector<ApbConfig>& configs) {
     configs.clear();
-    session_ids.clear();
-
-    int fd = open(apbs_path_, O_RDONLY | O_CREAT, 0600);
-    if (fd < 0) return false;
+    int fd = open(xwave_apb_path(session_id).c_str(), O_RDONLY);
+    if (fd < 0) return migrate_legacy(session_id, configs);
     if (!lock_file(fd)) {
         close(fd);
         return false;
     }
-
     FILE* fp = fdopen(fd, "r");
     if (!fp) {
         unlock_file(fd);
         close(fd);
         return false;
     }
-
-    char line[4096];
-    while (fgets(line, sizeof(line), fp)) {
-        size_t len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
-        ApbConfig config;
-        int sid;
-        if (parse_line(line, config, sid)) {
-            configs.push_back(config);
-            session_ids.push_back(sid);
-        }
-    }
-
+    std::string text;
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), fp)) text += buf;
     fclose(fp);
+    if (text.empty()) return true;
+    try {
+        Json root = Json::parse(text);
+        if (!root.is_object() || !root.value("configs", Json::array()).is_array()) return true;
+        for (const auto& item : root["configs"]) {
+            ApbConfig config;
+            if (json_to_apb(item, config)) configs.push_back(config);
+        }
+    } catch (...) {
+        return false;
+    }
     return true;
 }
 
-bool ApbManager::save_all(const std::vector<ApbConfig>& configs, const std::vector<int>& session_ids) {
-    int fd = open(apbs_path_, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+bool ApbManager::save_session(int session_id, const std::vector<ApbConfig>& configs) {
+    if (!xwave_ensure_session_dir(session_id)) return false;
+    int fd = open(xwave_apb_path(session_id).c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) return false;
     if (!lock_file(fd)) {
         close(fd);
         return false;
     }
-
-    for (size_t i = 0; i < configs.size(); ++i) {
-        std::string line = config_to_line(session_ids[i], configs[i]);
-        write(fd, line.c_str(), line.length());
-    }
-
+    Json root;
+    root["version"] = 1;
+    root["configs"] = Json::array();
+    for (const auto& config : configs) root["configs"].push_back(apb_to_json(config));
+    std::string data = root.dump(2) + "\n";
+    bool ok = write(fd, data.c_str(), data.size()) == static_cast<ssize_t>(data.size());
     unlock_file(fd);
     close(fd);
-    return true;
+    return ok;
 }
 
 bool ApbManager::create_apb(int session_id, const ApbConfig& config) {
     std::vector<ApbConfig> configs;
-    std::vector<int> session_ids;
-    load_all(configs, session_ids);
-
-    for (size_t i = 0; i < configs.size(); ++i) {
-        if (session_ids[i] == session_id && configs[i].name == config.name) {
-            return false; // already exists
-        }
+    load_session(session_id, configs);
+    for (const auto& c : configs) {
+        if (c.name == config.name) return false;
     }
-
     configs.push_back(config);
-    session_ids.push_back(session_id);
-    return save_all(configs, session_ids);
+    return save_session(session_id, configs);
 }
 
 bool ApbManager::delete_apb(int session_id, const std::string& name) {
     std::vector<ApbConfig> configs;
-    std::vector<int> session_ids;
-    load_all(configs, session_ids);
-
-    std::vector<ApbConfig> new_configs;
-    std::vector<int> new_session_ids;
+    load_session(session_id, configs);
+    std::vector<ApbConfig> out;
     bool found = false;
-    for (size_t i = 0; i < configs.size(); ++i) {
-        if (session_ids[i] == session_id && configs[i].name == name) {
+    for (const auto& c : configs) {
+        if (c.name == name) {
             found = true;
             continue;
         }
-        new_configs.push_back(configs[i]);
-        new_session_ids.push_back(session_ids[i]);
+        out.push_back(c);
     }
-    if (!found) return false;
-    return save_all(new_configs, new_session_ids);
+    return found && save_session(session_id, out);
 }
 
 bool ApbManager::get_apb(int session_id, const std::string& name, ApbConfig& config) {
     std::vector<ApbConfig> configs;
-    std::vector<int> session_ids;
-    load_all(configs, session_ids);
-
-    for (size_t i = 0; i < configs.size(); ++i) {
-        if (session_ids[i] == session_id && configs[i].name == name) {
-            config = configs[i];
+    load_session(session_id, configs);
+    for (const auto& c : configs) {
+        if (c.name == name) {
+            config = c;
             return true;
         }
     }
@@ -156,30 +191,16 @@ bool ApbManager::get_apb(int session_id, const std::string& name, ApbConfig& con
 
 bool ApbManager::get_latest_apb(int session_id, std::string& name) {
     std::vector<ApbConfig> configs;
-    std::vector<int> session_ids;
-    load_all(configs, session_ids);
-
-    for (int i = (int)configs.size() - 1; i >= 0; --i) {
-        if (session_ids[i] == session_id) {
-            name = configs[i].name;
-            return true;
-        }
-    }
-    return false;
+    load_session(session_id, configs);
+    if (configs.empty()) return false;
+    name = configs.back().name;
+    return true;
 }
 
 std::vector<ApbConfig> ApbManager::list_all(int session_id) {
     std::vector<ApbConfig> configs;
-    std::vector<int> session_ids;
-    load_all(configs, session_ids);
-
-    std::vector<ApbConfig> result;
-    for (size_t i = 0; i < configs.size(); ++i) {
-        if (session_ids[i] == session_id) {
-            result.push_back(configs[i]);
-        }
-    }
-    return result;
+    load_session(session_id, configs);
+    return configs;
 }
 
 } // namespace xwave

@@ -1,4 +1,6 @@
 #include "session_registry.h"
+#include "../common/xwave_paths.h"
+#include "../json.hpp"
 #include "../protocol/protocol.h"
 
 #include <fcntl.h>
@@ -11,8 +13,11 @@
 
 namespace xwave {
 
+using Json = nlohmann::ordered_json;
+
 SessionRegistry::SessionRegistry() {
-    get_registry_path(registry_path_);
+    xwave_ensure_home();
+    registry_path_ = xwave_registry_path();
 }
 
 SessionRegistry::~SessionRegistry() {
@@ -26,23 +31,37 @@ bool SessionRegistry::unlock_file(int fd) {
     return flock(fd, LOCK_UN) == 0;
 }
 
-std::string SessionRegistry::serialize(const SessionInfo& session) {
-    char buf[2048];
-    snprintf(buf, sizeof(buf), "%d|%s|%s|%d|%ld|%ld|%ld|%lld|%llu|%llu\n",
-             session.session_id,
-             session.socket_path.c_str(),
-             session.fsdb_file.c_str(),
-             session.server_pid,
-             session.created_at,
-             session.last_active,
-             session.fsdb_mtime,
-             session.fsdb_size,
-             session.fsdb_dev,
-             session.fsdb_inode);
-    return std::string(buf);
+static Json session_to_json(const SessionInfo& session) {
+    Json j;
+    j["session_id"] = session.session_id;
+    j["socket_path"] = session.socket_path;
+    j["fsdb_file"] = session.fsdb_file;
+    j["server_pid"] = session.server_pid;
+    j["created_at"] = static_cast<long long>(session.created_at);
+    j["last_active"] = static_cast<long long>(session.last_active);
+    j["fsdb_mtime"] = session.fsdb_mtime;
+    j["fsdb_size"] = session.fsdb_size;
+    j["fsdb_dev"] = session.fsdb_dev;
+    j["fsdb_inode"] = session.fsdb_inode;
+    return j;
 }
 
-bool SessionRegistry::parse_line(const char* line, SessionInfo& session) {
+static bool json_to_session(const Json& j, SessionInfo& session) {
+    if (!j.is_object()) return false;
+    session.session_id = j.value("session_id", 0);
+    session.socket_path = j.value("socket_path", "");
+    session.fsdb_file = j.value("fsdb_file", "");
+    session.server_pid = static_cast<pid_t>(j.value("server_pid", 0));
+    session.created_at = static_cast<time_t>(j.value("created_at", 0LL));
+    session.last_active = static_cast<time_t>(j.value("last_active", 0LL));
+    session.fsdb_mtime = j.value("fsdb_mtime", 0L);
+    session.fsdb_size = j.value("fsdb_size", 0LL);
+    session.fsdb_dev = j.value("fsdb_dev", 0ULL);
+    session.fsdb_inode = j.value("fsdb_inode", 0ULL);
+    return session.session_id > 0 && !session.fsdb_file.empty();
+}
+
+bool SessionRegistry::parse_legacy_line(const char* line, SessionInfo& session) {
     char socket_path[512] = {};
     char fsdb_file[1024] = {};
     int pid;
@@ -68,7 +87,7 @@ bool SessionRegistry::parse_line(const char* line, SessionInfo& session) {
         return false;
     }
 
-    session.socket_path = socket_path;
+    session.socket_path = xwave_socket_path(session.session_id);
     session.fsdb_file = fsdb_file;
     session.server_pid = pid;
     session.created_at = created_at;
@@ -89,11 +108,40 @@ bool SessionRegistry::parse_line(const char* line, SessionInfo& session) {
     return true;
 }
 
+bool SessionRegistry::load_legacy(std::vector<SessionInfo>& sessions) {
+    sessions.clear();
+    std::string legacy_path = xwave_legacy_registry_path();
+    int fd = open(legacy_path.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+
+    FILE* fp = fdopen(fd, "r");
+    if (!fp) {
+        close(fd);
+        return false;
+    }
+
+    char line[2048];
+    while (fgets(line, sizeof(line), fp)) {
+        SessionInfo session;
+        if (parse_legacy_line(line, session)) {
+            sessions.push_back(session);
+        }
+    }
+    fclose(fp);
+    return true;
+}
+
 bool SessionRegistry::load_all(std::vector<SessionInfo>& sessions) {
     sessions.clear();
+    xwave_ensure_home();
 
-    int fd = open(registry_path_, O_RDONLY | O_CREAT, 0600);
-    if (fd < 0) return false;
+    int fd = open(registry_path_.c_str(), O_RDONLY);
+    if (fd < 0) {
+        if (load_legacy(sessions)) {
+            save_all(sessions);
+        }
+        return true;
+    }
 
     if (!lock_file(fd)) {
         close(fd);
@@ -107,20 +155,46 @@ bool SessionRegistry::load_all(std::vector<SessionInfo>& sessions) {
         return false;
     }
 
-    char line[1024];
-    while (fgets(line, sizeof(line), fp)) {
-        SessionInfo session;
-        if (parse_line(line, session)) {
-            sessions.push_back(session);
-        }
-    }
+    std::string text;
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), fp)) text += buf;
+    fclose(fp);
 
-    fclose(fp);  // This also closes fd
+    if (text.empty()) return true;
+    try {
+        Json root = Json::parse(text);
+        if (!root.is_object() || !root.value("sessions", Json::array()).is_array()) return true;
+        for (const auto& item : root["sessions"]) {
+            SessionInfo session;
+            if (json_to_session(item, session)) {
+                if (session.socket_path.empty()) session.socket_path = xwave_socket_path(session.session_id);
+                sessions.push_back(session);
+            }
+        }
+    } catch (...) {
+        return false;
+    }
     return true;
 }
 
-bool SessionRegistry::add(const SessionInfo& session) {
-    int fd = open(registry_path_, O_WRONLY | O_CREAT | O_APPEND, 0600);
+bool SessionRegistry::write_session_file(const SessionInfo& session) {
+    if (!xwave_ensure_session_dir(session.session_id)) return false;
+    std::string path = xwave_session_json_path(session.session_id);
+    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return false;
+    Json root = {
+        {"version", 1},
+        {"session", session_to_json(session)}
+    };
+    std::string data = root.dump(2) + "\n";
+    bool ok = write(fd, data.c_str(), data.size()) == static_cast<ssize_t>(data.size());
+    close(fd);
+    return ok;
+}
+
+bool SessionRegistry::save_all(const std::vector<SessionInfo>& sessions) {
+    xwave_ensure_home();
+    int fd = open(registry_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) return false;
 
     if (!lock_file(fd)) {
@@ -128,13 +202,30 @@ bool SessionRegistry::add(const SessionInfo& session) {
         return false;
     }
 
-    std::string data = serialize(session);
-    ssize_t written = write(fd, data.c_str(), data.length());
+    Json root;
+    root["version"] = 1;
+    root["sessions"] = Json::array();
+    for (const auto& session : sessions) {
+        root["sessions"].push_back(session_to_json(session));
+    }
+    std::string data = root.dump(2) + "\n";
+    bool ok = write(fd, data.c_str(), data.size()) == static_cast<ssize_t>(data.size());
 
     unlock_file(fd);
     close(fd);
 
-    return written == (ssize_t)data.length();
+    if (!ok) return false;
+    for (const auto& session : sessions) {
+        write_session_file(session);
+    }
+    return true;
+}
+
+bool SessionRegistry::add(const SessionInfo& session) {
+    std::vector<SessionInfo> sessions;
+    load_all(sessions);
+    sessions.push_back(session);
+    return save_all(sessions);
 }
 
 bool SessionRegistry::upsert(const SessionInfo& session) {
@@ -150,24 +241,7 @@ bool SessionRegistry::upsert(const SessionInfo& session) {
         }
     }
     if (!replaced) sessions.push_back(session);
-
-    int fd = open(registry_path_, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) return false;
-
-    if (!lock_file(fd)) {
-        close(fd);
-        return false;
-    }
-
-    bool ok = true;
-    for (const auto& s : sessions) {
-        std::string data = serialize(s);
-        if (write(fd, data.c_str(), data.length()) != (ssize_t)data.length()) ok = false;
-    }
-
-    unlock_file(fd);
-    close(fd);
-    return ok;
+    return save_all(sessions);
 }
 
 bool SessionRegistry::touch(int session_id, time_t last_active) {
@@ -181,29 +255,19 @@ bool SessionRegistry::remove(int session_id) {
     std::vector<SessionInfo> sessions;
     if (!load_all(sessions)) return false;
 
-    // Rewrite registry without the removed session
-    int fd = open(registry_path_, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) return false;
-
-    if (!lock_file(fd)) {
-        close(fd);
-        return false;
-    }
-
+    std::vector<SessionInfo> kept;
     bool found = false;
     for (const auto& session : sessions) {
         if (session.session_id == session_id) {
             found = true;
             continue;
         }
-        std::string data = serialize(session);
-        write(fd, data.c_str(), data.length());
+        kept.push_back(session);
     }
-
-    unlock_file(fd);
-    close(fd);
-
-    return found;
+    if (!found) return false;
+    bool ok = save_all(kept);
+    xwave_remove_session_dir(session_id);
+    return ok;
 }
 
 bool SessionRegistry::get(int session_id, SessionInfo& session) {
@@ -223,7 +287,6 @@ bool SessionRegistry::get_latest(SessionInfo& session) {
     std::vector<SessionInfo> sessions;
     if (!load_all(sessions) || sessions.empty()) return false;
 
-    // Find session with highest ID
     int max_id = -1;
     size_t max_idx = 0;
     for (size_t i = 0; i < sessions.size(); ++i) {
@@ -243,9 +306,7 @@ int SessionRegistry::get_next_id() {
 
     int max_id = 0;
     for (const auto& s : sessions) {
-        if (s.session_id > max_id) {
-            max_id = s.session_id;
-        }
+        if (s.session_id > max_id) max_id = s.session_id;
     }
     return max_id + 1;
 }
@@ -255,42 +316,16 @@ bool SessionRegistry::cleanup_stale() {
     if (!load_all(sessions)) return false;
 
     std::vector<SessionInfo> valid_sessions;
-
     for (const auto& session : sessions) {
-        // Check if process is still alive
         bool is_alive = (kill(session.server_pid, 0) == 0);
-
-        // Also check if socket file exists
         bool socket_exists = (access(session.socket_path.c_str(), F_OK) == 0);
-
         if (is_alive && socket_exists) {
             valid_sessions.push_back(session);
         } else {
-            // Clean up stale socket file
-            if (socket_exists) {
-                unlink(session.socket_path.c_str());
-            }
+            xwave_remove_session_dir(session.session_id);
         }
     }
-
-    // Rewrite registry with only valid sessions
-    int fd = open(registry_path_, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) return false;
-
-    if (!lock_file(fd)) {
-        close(fd);
-        return false;
-    }
-
-    for (const auto& session : valid_sessions) {
-        std::string data = serialize(session);
-        write(fd, data.c_str(), data.length());
-    }
-
-    unlock_file(fd);
-    close(fd);
-
-    return true;
+    return save_all(valid_sessions);
 }
 
 bool SessionRegistry::cleanup_idle(time_t now, int timeout_sec) {
@@ -304,43 +339,23 @@ bool SessionRegistry::cleanup_idle(time_t now, int timeout_sec) {
         time_t last = session.last_active ? session.last_active : session.created_at;
         if (last > 0 && now - last > timeout_sec) {
             if (kill(session.server_pid, 0) == 0) kill(session.server_pid, SIGTERM);
-            unlink(session.socket_path.c_str());
+            xwave_remove_session_dir(session.session_id);
         } else {
             valid_sessions.push_back(session);
         }
     }
-
-    int fd = open(registry_path_, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) return false;
-
-    if (!lock_file(fd)) {
-        close(fd);
-        return false;
-    }
-
-    bool ok = true;
-    for (const auto& session : valid_sessions) {
-        std::string data = serialize(session);
-        if (write(fd, data.c_str(), data.length()) != (ssize_t)data.length()) ok = false;
-    }
-
-    unlock_file(fd);
-    close(fd);
-    return ok;
+    return save_all(valid_sessions);
 }
 
 bool SessionRegistry::clear_all() {
-    // Remove all socket files first
     std::vector<SessionInfo> sessions;
     if (load_all(sessions)) {
         for (const auto& session : sessions) {
-            unlink(session.socket_path.c_str());
+            xwave_remove_session_dir(session.session_id);
         }
     }
-
-    // Delete registry file
-    unlink(registry_path_);
-    return true;
+    std::vector<SessionInfo> empty;
+    return save_all(empty);
 }
 
-} // namespace xtrace
+} // namespace xwave

@@ -1,10 +1,12 @@
 #include "event_manager.h"
+#include "../common/xwave_paths.h"
 #include "../json.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 namespace xwave {
@@ -12,9 +14,6 @@ namespace xwave {
 using Json = nlohmann::ordered_json;
 
 EventManager::EventManager() {
-    const char* home = getenv("HOME");
-    if (!home) home = "/tmp";
-    snprintf(events_path_, sizeof(events_path_), "%s/.xwave.events", home);
 }
 
 static Json field_to_json(const EventField& field) {
@@ -25,9 +24,8 @@ static Json field_to_json(const EventField& field) {
     return j;
 }
 
-static Json config_to_json(int session_id, const std::string& fsdb_file, const EventConfig& config) {
+static Json config_to_json(const std::string& fsdb_file, const EventConfig& config) {
     Json j;
-    j["session_id"] = session_id;
     j["fsdb_file"] = fsdb_file;
     j["name"] = config.name;
     j["clk"] = config.clk;
@@ -40,9 +38,8 @@ static Json config_to_json(int session_id, const std::string& fsdb_file, const E
     return j;
 }
 
-static bool json_to_config(const Json& j, int& session_id, std::string& fsdb_file, EventConfig& config) {
+static bool json_to_config(const Json& j, std::string& fsdb_file, EventConfig& config) {
     if (!j.is_object()) return false;
-    session_id = j.value("session_id", -1);
     fsdb_file = j.value("fsdb_file", "");
     config.name = j.value("name", "");
     config.clk = j.value("clk", "");
@@ -66,12 +63,23 @@ static bool json_to_config(const Json& j, int& session_id, std::string& fsdb_fil
             config.fields[it.key()] = field;
         }
     }
-    return session_id > 0 && !fsdb_file.empty() && !config.name.empty() && !config.clk.empty();
+    return !fsdb_file.empty() && !config.name.empty() && !config.clk.empty();
 }
 
-bool EventManager::load_all(std::vector<std::string>& lines) {
-    lines.clear();
-    int fd = open(events_path_, O_RDONLY | O_CREAT, 0600);
+static bool lock_file(int fd) {
+    return flock(fd, LOCK_EX) == 0;
+}
+
+static bool unlock_file(int fd) {
+    return flock(fd, LOCK_UN) == 0;
+}
+
+bool EventManager::migrate_legacy(int session_id, std::vector<EventConfig>& configs, std::vector<std::string>& fsdb_files) {
+    configs.clear();
+    fsdb_files.clear();
+    if (!xwave_legacy_registry_has_session(session_id)) return false;
+
+    int fd = open(xwave_legacy_events_path().c_str(), O_RDONLY);
     if (fd < 0) return false;
     FILE* fp = fdopen(fd, "r");
     if (!fp) {
@@ -81,136 +89,156 @@ bool EventManager::load_all(std::vector<std::string>& lines) {
     char* line = nullptr;
     size_t len = 0;
     while (getline(&line, &len, fp) != -1) {
-        std::string s(line);
-        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
-        if (!s.empty()) lines.push_back(s);
+        try {
+            Json j = Json::parse(line);
+            if (j.value("session_id", -1) != session_id) continue;
+            std::string fsdb_file;
+            EventConfig cfg;
+            if (json_to_config(j, fsdb_file, cfg)) {
+                configs.push_back(cfg);
+                fsdb_files.push_back(fsdb_file);
+            }
+        } catch (...) {
+        }
     }
     if (line) free(line);
     fclose(fp);
+    if (!configs.empty()) save_session(session_id, configs, fsdb_files);
     return true;
 }
 
-bool EventManager::save_all(const std::vector<std::string>& lines) {
-    int fd = open(events_path_, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) return false;
-    FILE* fp = fdopen(fd, "w");
-    if (!fp) {
+bool EventManager::load_session(int session_id, std::vector<EventConfig>& configs, std::vector<std::string>& fsdb_files) {
+    configs.clear();
+    fsdb_files.clear();
+    int fd = open(xwave_events_path(session_id).c_str(), O_RDONLY);
+    if (fd < 0) return migrate_legacy(session_id, configs, fsdb_files);
+    if (!lock_file(fd)) {
         close(fd);
         return false;
     }
-    for (const auto& line : lines) fprintf(fp, "%s\n", line.c_str());
+    FILE* fp = fdopen(fd, "r");
+    if (!fp) {
+        unlock_file(fd);
+        close(fd);
+        return false;
+    }
+    std::string text;
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), fp)) text += buf;
     fclose(fp);
+    if (text.empty()) return true;
+    try {
+        Json root = Json::parse(text);
+        if (!root.is_object() || !root.value("events", Json::array()).is_array()) return true;
+        for (const auto& item : root["events"]) {
+            std::string fsdb_file;
+            EventConfig cfg;
+            if (json_to_config(item, fsdb_file, cfg)) {
+                configs.push_back(cfg);
+                fsdb_files.push_back(fsdb_file);
+            }
+        }
+    } catch (...) {
+        return false;
+    }
     return true;
 }
 
-bool EventManager::create_event(int session_id, const std::string& fsdb_file, const EventConfig& config) {
-    std::vector<std::string> lines;
-    if (!load_all(lines)) return false;
-
-    std::vector<std::string> out;
-    for (const auto& line : lines) {
-        try {
-            Json j = Json::parse(line);
-            int sid = j.value("session_id", -1);
-            std::string stored_fsdb = j.value("fsdb_file", "");
-            std::string name = j.value("name", "");
-            if (sid == session_id && stored_fsdb == fsdb_file && name == config.name) continue;
-        } catch (...) {
-        }
-        out.push_back(line);
+bool EventManager::save_session(int session_id, const std::vector<EventConfig>& configs, const std::vector<std::string>& fsdb_files) {
+    if (!xwave_ensure_session_dir(session_id)) return false;
+    int fd = open(xwave_events_path(session_id).c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return false;
+    if (!lock_file(fd)) {
+        close(fd);
+        return false;
     }
-    out.push_back(config_to_json(session_id, fsdb_file, config).dump());
-    return save_all(out);
+    Json root;
+    root["version"] = 1;
+    root["events"] = Json::array();
+    for (size_t i = 0; i < configs.size(); ++i) {
+        root["events"].push_back(config_to_json(fsdb_files[i], configs[i]));
+    }
+    std::string data = root.dump(2) + "\n";
+    bool ok = write(fd, data.c_str(), data.size()) == static_cast<ssize_t>(data.size());
+    unlock_file(fd);
+    close(fd);
+    return ok;
+}
+
+bool EventManager::create_event(int session_id, const std::string& fsdb_file, const EventConfig& config) {
+    std::vector<EventConfig> configs;
+    std::vector<std::string> fsdb_files;
+    if (!load_session(session_id, configs, fsdb_files)) return false;
+
+    std::vector<EventConfig> out_configs;
+    std::vector<std::string> out_fsdbs;
+    for (size_t i = 0; i < configs.size(); ++i) {
+        if (fsdb_files[i] == fsdb_file && configs[i].name == config.name) continue;
+        out_configs.push_back(configs[i]);
+        out_fsdbs.push_back(fsdb_files[i]);
+    }
+    out_configs.push_back(config);
+    out_fsdbs.push_back(fsdb_file);
+    return save_session(session_id, out_configs, out_fsdbs);
 }
 
 bool EventManager::delete_event(int session_id, const std::string& fsdb_file, const std::string& name) {
-    std::vector<std::string> lines;
-    if (!load_all(lines)) return false;
-    std::vector<std::string> out;
+    std::vector<EventConfig> configs;
+    std::vector<std::string> fsdb_files;
+    if (!load_session(session_id, configs, fsdb_files)) return false;
+    std::vector<EventConfig> out_configs;
+    std::vector<std::string> out_fsdbs;
     bool removed = false;
-    for (const auto& line : lines) {
-        try {
-            Json j = Json::parse(line);
-            int sid = j.value("session_id", -1);
-            std::string stored_fsdb = j.value("fsdb_file", "");
-            std::string cfg_name = j.value("name", "");
-            if (sid == session_id && stored_fsdb == fsdb_file && cfg_name == name) {
-                removed = true;
-                continue;
-            }
-        } catch (...) {
+    for (size_t i = 0; i < configs.size(); ++i) {
+        if (fsdb_files[i] == fsdb_file && configs[i].name == name) {
+            removed = true;
+            continue;
         }
-        out.push_back(line);
+        out_configs.push_back(configs[i]);
+        out_fsdbs.push_back(fsdb_files[i]);
     }
-    return removed && save_all(out);
+    return removed && save_session(session_id, out_configs, out_fsdbs);
 }
 
 bool EventManager::delete_session_events(int session_id) {
-    std::vector<std::string> lines;
-    if (!load_all(lines)) return false;
-    std::vector<std::string> out;
-    for (const auto& line : lines) {
-        try {
-            Json j = Json::parse(line);
-            if (j.value("session_id", -1) == session_id) continue;
-        } catch (...) {
-        }
-        out.push_back(line);
-    }
-    return save_all(out);
+    std::string path = xwave_events_path(session_id);
+    if (unlink(path.c_str()) == 0) return true;
+    return access(path.c_str(), F_OK) != 0;
 }
 
 bool EventManager::get_event(int session_id, const std::string& fsdb_file, const std::string& name, EventConfig& config) {
-    std::vector<std::string> lines;
-    if (!load_all(lines)) return false;
-    for (const auto& line : lines) {
-        try {
-            Json j = Json::parse(line);
-            int sid = -1;
-            std::string stored_fsdb;
-            EventConfig cfg;
-            if (json_to_config(j, sid, stored_fsdb, cfg) &&
-                sid == session_id && stored_fsdb == fsdb_file && cfg.name == name) {
-                config = cfg;
-                return true;
-            }
-        } catch (...) {
+    std::vector<EventConfig> configs;
+    std::vector<std::string> fsdb_files;
+    if (!load_session(session_id, configs, fsdb_files)) return false;
+    for (size_t i = 0; i < configs.size(); ++i) {
+        if (fsdb_files[i] == fsdb_file && configs[i].name == name) {
+            config = configs[i];
+            return true;
         }
     }
     return false;
 }
 
 bool EventManager::get_latest_event(int session_id, const std::string& fsdb_file, std::string& name) {
-    std::vector<std::string> lines;
-    if (!load_all(lines)) return false;
-    for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
-        try {
-            Json j = Json::parse(*it);
-            if (j.value("session_id", -1) == session_id &&
-                j.value("fsdb_file", "") == fsdb_file) {
-                name = j.value("name", "");
-                return !name.empty();
-            }
-        } catch (...) {
+    std::vector<EventConfig> configs;
+    std::vector<std::string> fsdb_files;
+    if (!load_session(session_id, configs, fsdb_files)) return false;
+    for (int i = static_cast<int>(configs.size()) - 1; i >= 0; --i) {
+        if (fsdb_files[i] == fsdb_file) {
+            name = configs[i].name;
+            return !name.empty();
         }
     }
     return false;
 }
 
 std::vector<std::string> EventManager::list_events(int session_id, const std::string& fsdb_file) {
-    std::vector<std::string> lines;
+    std::vector<EventConfig> configs;
+    std::vector<std::string> fsdb_files;
     std::vector<std::string> names;
-    if (!load_all(lines)) return names;
-    for (const auto& line : lines) {
-        try {
-            Json j = Json::parse(line);
-            if (j.value("session_id", -1) == session_id &&
-                j.value("fsdb_file", "") == fsdb_file) {
-                std::string name = j.value("name", "");
-                if (!name.empty()) names.push_back(name);
-            }
-        } catch (...) {
-        }
+    if (!load_session(session_id, configs, fsdb_files)) return names;
+    for (size_t i = 0; i < configs.size(); ++i) {
+        if (fsdb_files[i] == fsdb_file && !configs[i].name.empty()) names.push_back(configs[i].name);
     }
     return names;
 }

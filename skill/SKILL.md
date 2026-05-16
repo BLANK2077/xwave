@@ -77,6 +77,7 @@ AI usage rules:
 - Use `scope.list` after `SIGNAL_NOT_FOUND`.
 - Use `limits.max_rows/max_events/max_samples` for broad scans.
 - Load APB/AXI/Event configs before protocol or event actions.
+- Runtime state and persisted configs live under `~/.xwave/`: `registry.json` plus `sessions/<sid>/session.json`, `socket`, `debug.log`, `lists.json`, `apb.json`, `axi.json`, and `events.json`. Older top-level files such as `~/.xwave.registry` are legacy migration inputs only.
 
 ## Session Actions
 

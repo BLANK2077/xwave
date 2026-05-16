@@ -2,6 +2,7 @@
 #include "fsdb_value_reader.h"
 #include "fsdb_scan_utils.h"
 #include "../protocol/protocol.h"
+#include "../list/list_manager.h"
 #include "../list/signal_list.h"
 #include "../apb/apb_analyzer.h"
 #include "../apb/apb_manager.h"
@@ -254,52 +255,9 @@ static bool parse_user_time(const char* text,
     return true;
 }
 
-// Helper: read a signal list from the registry file by session_id and list_name
-static bool read_list_from_registry(int session_id, const char* list_name, SignalList& out_list) {
-    const char* home = getenv("HOME");
-    if (!home) home = "/tmp";
-    char path[256];
-    snprintf(path, sizeof(path), "%s/.xwave.lists", home);
-
-    FILE* fp = fopen(path, "r");
-    if (!fp) return false;
-
-    char line[4096];
-    bool found = false;
-    while (fgets(line, sizeof(line), fp)) {
-        // Remove trailing newline
-        size_t len = strlen(line);
-        if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
-
-        char buf_session_id[16];
-        char buf_list_name[256];
-        if (sscanf(line, "%15[^|]|%255[^|]", buf_session_id, buf_list_name) != 2) {
-            continue;
-        }
-        if (atoi(buf_session_id) != session_id) continue;
-        if (strcmp(buf_list_name, list_name) != 0) continue;
-
-        out_list.name = list_name;
-        out_list.signals.clear();
-
-        char* p = strchr(line, '|');
-        if (!p) continue;
-        p = strchr(p + 1, '|'); // skip session_id and list_name
-        while (p) {
-            p++;
-            char* end = strchr(p, '|');
-            if (end) *end = '\0';
-            if (strlen(p) > 0) {
-                out_list.signals.push_back(p);
-            }
-            p = end;
-        }
-        found = true;
-        break;
-    }
-
-    fclose(fp);
-    return found;
+static bool read_list_from_storage(int session_id, const char* list_name, SignalList& out_list) {
+    ListManager lm;
+    return lm.get_list(session_id, list_name, out_list);
 }
 
 static std::string format_time(npiFsdbTime t) {
@@ -388,7 +346,7 @@ static void handle_value(int client_fd, const char* signal_path, npiFsdbTime tim
 
 static void handle_list_value(int client_fd, const char* list_name, npiFsdbTime time, char fmt, bool json) {
     SignalList list;
-    if (!read_list_from_registry(g_session_id, list_name, list)) {
+    if (!read_list_from_storage(g_session_id, list_name, list)) {
         std::string err = std::string(ERROR_PREFIX) + "List not found: " + list_name + "\n" + END_MARKER;
         send_all(client_fd, err.c_str(), err.length());
         return;
@@ -445,7 +403,7 @@ static void handle_signal_check(int client_fd, const char* signal_path) {
 
 static void handle_list_validate(int client_fd, const char* list_name, bool json) {
     SignalList list;
-    if (!read_list_from_registry(g_session_id, list_name, list)) {
+    if (!read_list_from_storage(g_session_id, list_name, list)) {
         std::string err = std::string(ERROR_PREFIX) + "List not found: " + list_name + "\n" + END_MARKER;
         send_all(client_fd, err.c_str(), err.length());
         return;
@@ -530,7 +488,7 @@ static bool read_axi_from_registry(int session_id, const char* name, xwave::AxiC
 
 static void handle_list_diff(int client_fd, const char* list_name, npiFsdbTime begin_time, npiFsdbTime end_time) {
     SignalList list;
-    if (!read_list_from_registry(g_session_id, list_name, list)) {
+    if (!read_list_from_storage(g_session_id, list_name, list)) {
         std::string err = std::string(ERROR_PREFIX) + "List not found: " + list_name + "\n" + END_MARKER;
         send_all(client_fd, err.c_str(), err.length());
         return;

@@ -10,7 +10,7 @@
 // Socket path configuration
 #define SOCK_PATH_PREFIX    ".xwave"
 #define SOCK_PATH_LEN       256
-#define REGISTRY_FILE       ".xwave.registry"
+#define REGISTRY_FILE       "registry.json"
 
 // Protocol commands (client -> server)
 #define CMD_PING            "PING"
@@ -51,19 +51,26 @@
 inline void get_sock_path(char* buf, int session_id) {
     const char* home = getenv("HOME");
     if (!home) home = "/tmp";
-    snprintf(buf, SOCK_PATH_LEN, "%s/%s.%d.sock", home, SOCK_PATH_PREFIX, session_id);
+    snprintf(buf, SOCK_PATH_LEN, "%s/%s/sessions/%d/socket", home, SOCK_PATH_PREFIX, session_id);
 }
 
 // Get registry file path
 inline void get_registry_path(char* buf) {
     const char* home = getenv("HOME");
     if (!home) home = "/tmp";
-    snprintf(buf, SOCK_PATH_LEN, "%s/%s", home, REGISTRY_FILE);
+    snprintf(buf, SOCK_PATH_LEN, "%s/%s/%s", home, SOCK_PATH_PREFIX, REGISTRY_FILE);
+}
+
+// Get registry lock file path
+inline void get_registry_lock_path(char* buf) {
+    const char* home = getenv("HOME");
+    if (!home) home = "/tmp";
+    snprintf(buf, SOCK_PATH_LEN, "%s/%s/registry.lock", home, SOCK_PATH_PREFIX);
 }
 
 // Get server-side debug log path for a session
 inline void get_debug_log_path(char* buf, int session_id) {
     const char* home = getenv("HOME");
     if (!home) home = "/tmp";
-    snprintf(buf, SOCK_PATH_LEN, "%s/%s.%d.debug.log", home, SOCK_PATH_PREFIX, session_id);
+    snprintf(buf, SOCK_PATH_LEN, "%s/%s/sessions/%d/debug.log", home, SOCK_PATH_PREFIX, session_id);
 }

@@ -18,12 +18,10 @@ public:
     std::vector<ApbConfig> list_all(int session_id);
 
 private:
-    char apbs_path_[256];
-
-    bool load_all(std::vector<ApbConfig>& configs, std::vector<int>& session_ids);
-    bool save_all(const std::vector<ApbConfig>& configs, const std::vector<int>& session_ids);
-    static bool parse_line(const char* line, ApbConfig& config, int& session_id);
-    static std::string config_to_line(int session_id, const ApbConfig& config);
+    bool load_session(int session_id, std::vector<ApbConfig>& configs);
+    bool save_session(int session_id, const std::vector<ApbConfig>& configs);
+    bool migrate_legacy(int session_id, std::vector<ApbConfig>& configs);
+    static bool parse_legacy_line(const char* line, ApbConfig& config, int& session_id);
 };
 
 } // namespace xwave

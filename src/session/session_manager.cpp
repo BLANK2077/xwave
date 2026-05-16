@@ -1,5 +1,5 @@
 #include "session_manager.h"
-#include "../event/event_manager.h"
+#include "../common/xwave_paths.h"
 #include "../protocol/protocol.h"
 
 #include <cstdio>
@@ -26,8 +26,8 @@ namespace {
 
 int open_registry_lock() {
     char lock_path[SOCK_PATH_LEN];
-    get_registry_path(lock_path);
-    strncat(lock_path, ".lock", sizeof(lock_path) - strlen(lock_path) - 1);
+    xwave_ensure_home();
+    get_registry_lock_path(lock_path);
     return open(lock_path, O_RDWR | O_CREAT, 0600);
 }
 
@@ -294,8 +294,7 @@ int SessionManager::create_session(const std::string& fsdb_file) {
     int lock_fd = open_registry_lock();
     if (lock_fd < 0) {
         char lock_path[SOCK_PATH_LEN];
-        get_registry_path(lock_path);
-        strncat(lock_path, ".lock", sizeof(lock_path) - strlen(lock_path) - 1);
+        get_registry_lock_path(lock_path);
         debug_log("create_session: reason=registry_lock_open_failed lock=%s errno=%d(%s)",
                   lock_path, errno, strerror(errno));
         return 0;
@@ -353,6 +352,12 @@ int SessionManager::create_session(const std::string& fsdb_file) {
 
     // Get next session ID
     int session_id = registry_->get_next_id();
+    if (!xwave_ensure_session_dir(session_id)) {
+        debug_log("create_session: reason=session_dir_create_failed session=%d", session_id);
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        return 0;
+    }
     debug_log("create_session: next_session_id=%d", session_id);
 
     // Spawn server process
@@ -360,6 +365,7 @@ int SessionManager::create_session(const std::string& fsdb_file) {
     if (pid < 0) {
         debug_log("create_session: reason=spawn_failed session=%d errno=%d(%s)",
                   session_id, errno, strerror(errno));
+        xwave_remove_session_dir(session_id);
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
         return 0;
@@ -382,6 +388,7 @@ int SessionManager::create_session(const std::string& fsdb_file) {
                   wait.connect_ok ? 1 : 0, wait.ping_ok ? 1 : 0);
         kill(pid, SIGTERM);
         unlink(sock_path);
+        xwave_remove_session_dir(session_id);
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
         return 0;
@@ -403,6 +410,7 @@ int SessionManager::create_session(const std::string& fsdb_file) {
                   session_id);
         kill(pid, SIGTERM);
         unlink(sock_path);
+        xwave_remove_session_dir(session_id);
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
         return 0;
@@ -460,10 +468,7 @@ bool SessionManager::stop_process(const SessionInfo& session, bool remove_record
 
     unlink(session.socket_path.c_str());
     if (remove_record) registry_->remove(session.session_id);
-    if (remove_events) {
-        EventManager event_manager;
-        event_manager.delete_session_events(session.session_id);
-    }
+    if (!remove_record && remove_events) xwave_remove_session_dir(session.session_id);
     return true;
 }
 
@@ -598,9 +603,6 @@ bool SessionManager::kill_session(int session_id) {
             if (kill(session.server_pid, 0) == 0) kill(session.server_pid, SIGKILL);
         }
         registry_->remove(session_id);
-        EventManager event_manager;
-        event_manager.delete_session_events(session_id);
-        unlink(session.socket_path.c_str());
         return true;
     }
 
@@ -610,14 +612,10 @@ bool SessionManager::kill_session(int session_id) {
 bool SessionManager::kill_all_sessions() {
     std::vector<SessionInfo> sessions = list_sessions();
     debug_log("kill_all_sessions: count=%zu", sessions.size());
-    EventManager event_manager;
     for (const auto& session : sessions) {
         kill_session(session.session_id);
     }
     registry_->clear_all();
-    for (const auto& session : sessions) {
-        event_manager.delete_session_events(session.session_id);
-    }
     return true;
 }
 
@@ -783,14 +781,6 @@ void SessionManager::cleanup() {
     std::vector<SessionInfo> after;
     registry_->load_all(after);
     debug_log("cleanup: after_count=%zu", after.size());
-    std::set<int> live_ids;
-    for (const auto& session : after) live_ids.insert(session.session_id);
-    EventManager event_manager;
-    for (const auto& session : before) {
-        if (live_ids.find(session.session_id) == live_ids.end()) {
-            event_manager.delete_session_events(session.session_id);
-        }
-    }
 }
 
-} // namespace xtrace
+} // namespace xwave

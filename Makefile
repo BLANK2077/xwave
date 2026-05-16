@@ -30,6 +30,7 @@ SRCS        = src/main.cpp \
               src/server/fsdb_value_reader.cpp \
               src/server/fsdb_scan_utils.cpp \
               src/list/list_manager.cpp \
+              src/common/xwave_paths.cpp \
               src/common/time_parser.cpp \
               src/apb/apb_manager.cpp \
               src/apb/apb_analyzer.cpp \

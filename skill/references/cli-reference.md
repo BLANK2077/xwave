@@ -112,12 +112,31 @@ tools/xwave-env ai actions
 | `list` | 列出 Session ID、PID、RSS、创建时间、最后活跃时间和 FSDB 路径。 |
 | `doctor` | 检查 registry、FSDB fingerprint、进程、socket 和 PING/PONG 健康状态。 |
 | `gc` | 清理 stale Session 和超过 idle timeout 的 Session。 |
-| `kill <id>` | 停止指定 Session daemon，并删除对应 registry/config 清理项。 |
+| `kill <id>` | 停止指定 Session daemon，并删除 `~/.xwave/sessions/<sid>/` 目录及 registry 记录。 |
 | `kill all` | 停止并清理所有 Session。 |
 | `-s <sid>` | `doctor` 要诊断的 Session ID。 |
 | `-json` | `doctor` 输出 JSON，便于脚本判断。 |
 
 默认 idle timeout 是 1800 秒，可用 `XWAVE_IDLE_TIMEOUT_SEC` 覆盖。
+
+维护文件统一放在 `~/.xwave/`：
+
+```text
+~/.xwave/
+├── registry.json
+├── registry.lock
+└── sessions/
+    └── <sid>/
+        ├── session.json
+        ├── socket
+        ├── debug.log
+        ├── lists.json
+        ├── apb.json
+        ├── axi.json
+        └── events.json
+```
+
+新版只写上述 JSON/目录布局。旧版顶层文件（如 `~/.xwave.registry`、`~/.xwave.lists`、`~/.xwave.apb`、`~/.xwave.axi`、`~/.xwave.events`）只作为兼容迁移输入读取；只有存在匹配旧 registry 记录时才迁移，避免 session id 复用污染。
 
 ### `value`
 
@@ -392,7 +411,7 @@ xwave event export -n <名> -expr <表达式> [-b <T>] [-e <T>] [-limit N] [-con
 - `export` 导出匹配事件，未指定 `-limit` 时默认最多 1000 条；用 `-limit` 覆盖数量
 - `-context <T>` 可搭配 `-axi <名>`、`-apb <名>` 或二者同时使用，在每条 event 前后 `T` 时间窗口内附带协议事务上下文
 - 表达式会先做语法和 alias 校验；含 `x/z` 的比较结果为 unknown，不会作为匹配事件
-- 旧版 `.xwave.events` 缺少 FSDB 绑定信息时不会被复用，重新加载配置即可迁移
+- 旧版 `.xwave.events` 缺少 FSDB 绑定信息时不会被复用，重新加载配置即可写入当前 session 的 `~/.xwave/sessions/<sid>/events.json`
 
 ---
 
@@ -468,5 +487,5 @@ tools/xwave-env session kill all
 - **信号路径必须与 FSDB 中完全一致**，含完整层级（如 `test_top.u_data_gen.cnt_a`）
 - 不指定 `-s` 时自动用最新 Session；不指定 `-l`/`-n` 时自动用最近修改的列表/配置
 - `list diff` 需至少 2 个信号
-- Session 以后台 daemon 运行，终端关闭不影响；用 `session kill` 清理
+- Session 以后台 daemon 运行，终端关闭不影响；用 `session kill` 清理对应 `~/.xwave/sessions/<sid>/`
 - 默认输出为十六进制，无 `0x` 前缀，格式为 `'h...`

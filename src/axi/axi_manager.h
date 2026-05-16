@@ -18,12 +18,10 @@ public:
     std::vector<AxiConfig> list_all(int session_id);
 
 private:
-    char axis_path_[256];
-
-    bool load_all(std::vector<AxiConfig>& configs, std::vector<int>& session_ids);
-    bool save_all(const std::vector<AxiConfig>& configs, const std::vector<int>& session_ids);
-    static bool parse_line(const char* line, AxiConfig& config, int& session_id);
-    static std::string config_to_line(int session_id, const AxiConfig& config);
+    bool load_session(int session_id, std::vector<AxiConfig>& configs);
+    bool save_session(int session_id, const std::vector<AxiConfig>& configs);
+    bool migrate_legacy(int session_id, std::vector<AxiConfig>& configs);
+    static bool parse_legacy_line(const char* line, AxiConfig& config, int& session_id);
 };
 
 } // namespace xwave

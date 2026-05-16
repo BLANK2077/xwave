@@ -65,8 +65,8 @@ tools/xwave-env session kill 1
 
 - one FSDB file and one NPI context
 - one daemon process
-- one Unix domain socket under `$HOME`
-- one registry record in `~/.xwave.registry`
+- one Unix domain socket under `~/.xwave/sessions/<sid>/socket`
+- one registry record in `~/.xwave/registry.json`
 
 Sessions record the FSDB mtime, size, device, and inode. If the FSDB is replaced or updated, the next access reports the change and restarts the daemon while preserving the session ID and loaded configs.
 
@@ -269,7 +269,7 @@ tools/xwave-env session gc --debug
 Debug output goes to stderr. Server startup details are written to:
 
 ```text
-~/.xwave.<sid>.debug.log
+~/.xwave/sessions/<sid>/debug.log
 ```
 
 The trace identifies stages such as FSDB stat, registry lock, fork/exec, `npi_init`, `npi_fsdb_open`, socket bind/listen, connect, PING, idle timeout, and cleanup reason.
@@ -369,13 +369,17 @@ Notes:
 
 Persistent files:
 
-- `~/.xwave.registry`: session records
-- `~/.xwave.lists`: signal lists
-- `~/.xwave.apb`: APB configs
-- `~/.xwave.axi`: AXI configs
-- `~/.xwave.events`: event configs
-- `~/.xwave.<sid>.sock`: session socket
-- `~/.xwave.<sid>.debug.log`: server debug log
+- `~/.xwave/registry.json`: active session records
+- `~/.xwave/registry.lock`: registry lock
+- `~/.xwave/sessions/<sid>/session.json`: per-session metadata
+- `~/.xwave/sessions/<sid>/socket`: session socket
+- `~/.xwave/sessions/<sid>/debug.log`: server debug log
+- `~/.xwave/sessions/<sid>/lists.json`: signal lists
+- `~/.xwave/sessions/<sid>/apb.json`: APB configs
+- `~/.xwave/sessions/<sid>/axi.json`: AXI configs
+- `~/.xwave/sessions/<sid>/events.json`: event configs
+
+Older top-level maintenance files such as `~/.xwave.registry` and `~/.xwave.lists` are read for one-time migration when the new JSON files are missing and a matching legacy registry record exists. New writes go only to `~/.xwave/`.
 
 Source layout:
 

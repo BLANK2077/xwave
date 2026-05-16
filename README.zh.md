@@ -65,8 +65,8 @@ tools/xwave-env session kill 1
 
 - 一个 FSDB 文件和一个 NPI 上下文
 - 一个 daemon 进程
-- 一个位于 `$HOME` 下的 Unix domain socket
-- 一条 `~/.xwave.registry` 记录
+- 一个位于 `~/.xwave/sessions/<sid>/socket` 的 Unix domain socket
+- 一条 `~/.xwave/registry.json` 记录
 
 Session 会记录 FSDB 的 mtime、size、device、inode。若 FSDB 被替换或更新，下一次访问会提示文件变化，并在保留 Session ID 和已加载配置的情况下重启 daemon。
 
@@ -269,7 +269,7 @@ tools/xwave-env session gc --debug
 debug 输出写入 stderr。server 启动细节写入：
 
 ```text
-~/.xwave.<sid>.debug.log
+~/.xwave/sessions/<sid>/debug.log
 ```
 
 诊断信息会标出 FSDB stat、registry lock、fork/exec、`npi_init`、`npi_fsdb_open`、socket bind/listen、connect、PING、idle timeout 和 cleanup reason 等阶段。
@@ -369,13 +369,17 @@ make clean && make
 
 持久化文件：
 
-- `~/.xwave.registry`：Session 记录
-- `~/.xwave.lists`：信号列表
-- `~/.xwave.apb`：APB 配置
-- `~/.xwave.axi`：AXI 配置
-- `~/.xwave.events`：event 配置
-- `~/.xwave.<sid>.sock`：Session socket
-- `~/.xwave.<sid>.debug.log`：server debug log
+- `~/.xwave/registry.json`：活跃 Session 记录
+- `~/.xwave/registry.lock`：registry 锁
+- `~/.xwave/sessions/<sid>/session.json`：单个 Session 元数据
+- `~/.xwave/sessions/<sid>/socket`：Session socket
+- `~/.xwave/sessions/<sid>/debug.log`：server debug log
+- `~/.xwave/sessions/<sid>/lists.json`：信号列表
+- `~/.xwave/sessions/<sid>/apb.json`：APB 配置
+- `~/.xwave/sessions/<sid>/axi.json`：AXI 配置
+- `~/.xwave/sessions/<sid>/events.json`：event 配置
+
+旧版顶层维护文件（例如 `~/.xwave.registry`、`~/.xwave.lists`）在新 JSON 文件不存在且存在匹配的旧 registry 记录时会被只读迁移。新版本只写入 `~/.xwave/` 目录。
 
 源码目录：
 

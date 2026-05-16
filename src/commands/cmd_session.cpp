@@ -71,7 +71,7 @@ static void print_open_help(const char* prog) {
     printf("  <fsdb-file>  FSDB file path. Relative paths are resolved to canonical paths.\n\n");
     printf("Options:\n");
     printf("  --debug      Print session creation diagnostics to stderr. Also enabled by XWAVE_DEBUG=1.\n");
-    printf("               Server startup diagnostics are written to ~/.xwave.<sid>.debug.log.\n\n");
+    printf("               Server startup diagnostics are written to ~/.xwave/sessions/<sid>/debug.log.\n\n");
     printf("Session behavior:\n");
     printf("  xwave records mtime, size, device, and inode. Later session commands compare\n");
     printf("  this fingerprint; if the file changed, the daemon is restarted in place.\n");

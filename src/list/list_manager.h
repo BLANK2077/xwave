@@ -19,11 +19,10 @@ public:
     std::vector<SignalList> list_all(int session_id);
 
 private:
-    char lists_path_[256];
-
-    bool load_all(std::vector<SignalList>& lists, std::vector<int>& session_ids);
-    bool save_all(const std::vector<SignalList>& lists, const std::vector<int>& session_ids);
-    bool parse_line(const char* line, SignalList& list, int& session_id);
+    bool load_session(int session_id, std::vector<SignalList>& lists);
+    bool save_session(int session_id, const std::vector<SignalList>& lists);
+    bool migrate_legacy(int session_id, std::vector<SignalList>& lists);
+    bool parse_legacy_line(const char* line, SignalList& list, int& session_id);
 };
 
 } // namespace xwave
