@@ -307,6 +307,8 @@ tools/xwave-env session kill all            # 关闭所有 Session
 
 `open` 会规范化 FSDB 路径并复用同一文件的健康 Session。Session 记录 FSDB 的 mtime/size/dev/inode；若文件发生变化，下一次查询会提示并自动重启 daemon，保留原 Session ID 和已加载配置。
 
+Session 有 idle timeout。默认 1800 秒，可通过 `XWAVE_IDLE_TIMEOUT_SEC` 覆盖；长时间交互 debug 建议设置更大值，例如 `XWAVE_IDLE_TIMEOUT_SEC=28800`。idle timeout 后 daemon 会退出并释放 FSDB/NPI 句柄；重新执行 `open <fsdb>` 应创建新的 Session，如果失败请加 `--debug` 定位具体阶段。
+
 如果遇到 `Failed to create session`，先运行 `tools/xwave-env open <fsdb> --debug`，或设置 `XWAVE_DEBUG=1`。debug 信息输出到 stderr，server 侧启动细节写入 `~/.xwave.<sid>.debug.log`。诊断会标出 FSDB stat、registry lock、fork/exec、`npi_init`、`npi_fsdb_open`、socket bind/listen、connect、PING 等阶段。`XWAVE_SESSION_START_TIMEOUT_SEC` 控制启动等待时间，默认 60 秒；大 FSDB 或网络盘较慢时可以增大。
 
 常见创建失败原因包括 FSDB 不可访问、Verdi/NPI 运行环境或 license 缺失、`npi_fsdb_open` 失败、大 FSDB 打开时间超过启动等待、`$HOME` 不支持 Unix domain socket/registry 文件。在 LSF 环境里还要确认 `open` 和后续命令都通过同一个专用队列或固定 host 运行。
@@ -419,7 +421,7 @@ xwave/
 - 不指定 `-s` 时自动用最新 Session；不指定 `-l`/`-n` 时自动用最近修改的列表/配置
 - `list diff` 需至少 2 个信号
 - Session 以后台 daemon 运行，终端关闭不影响；用 `session kill` 或 `session gc` 清理
-- 默认 idle timeout 为 1800 秒，可通过 `XWAVE_IDLE_TIMEOUT_SEC` 覆盖
+- 默认 idle timeout 为 1800 秒，可通过 `XWAVE_IDLE_TIMEOUT_SEC` 覆盖；timeout 后重新执行 `open <fsdb>` 创建新 Session
 - Session 启动默认最多等待 60 秒，可通过 `XWAVE_SESSION_START_TIMEOUT_SEC` 覆盖
 - 使用 `--debug` 或 `XWAVE_DEBUG=1` 查看 Session 创建/重启诊断；server 启动日志保存在 `~/.xwave.<sid>.debug.log`
 - 默认输出为十六进制，格式为 `'h...`

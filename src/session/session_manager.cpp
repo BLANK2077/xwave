@@ -317,8 +317,12 @@ int SessionManager::create_session(const std::string& fsdb_file) {
     std::vector<SessionInfo> existing;
     registry_->load_all(existing);
     debug_log("create_session: existing_sessions=%zu", existing.size());
+    std::vector<SessionInfo> unhealthy_same_fsdb;
     for (const auto& session : existing) {
-        if (session.fsdb_file == canonical && diagnose_session(session.session_id).healthy) {
+        if (session.fsdb_file != canonical) continue;
+
+        SessionHealth health = diagnose_session(session.session_id);
+        if (health.healthy) {
             debug_log("create_session: reuse_existing_session session=%d pid=%d socket=%s",
                       session.session_id, session.server_pid, session.socket_path.c_str());
             registry_->touch(session.session_id, time(nullptr));
@@ -326,6 +330,25 @@ int SessionManager::create_session(const std::string& fsdb_file) {
             close(lock_fd);
             return session.session_id;
         }
+
+        debug_log("create_session: found_unhealthy_same_fsdb session=%d status=%s message=%s",
+                  session.session_id,
+                  session_health_status_name(health.status),
+                  health.message.c_str());
+        unhealthy_same_fsdb.push_back(session);
+    }
+
+    if (!unhealthy_same_fsdb.empty()) {
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        for (const auto& session : unhealthy_same_fsdb) {
+            debug_log("create_session: removing_unhealthy_same_fsdb session=%d pid=%d socket=%s",
+                      session.session_id,
+                      session.server_pid,
+                      session.socket_path.c_str());
+            stop_process(session, true, false);
+        }
+        return create_session(canonical);
     }
 
     // Get next session ID
@@ -618,8 +641,22 @@ bool SessionManager::gc_sessions() {
     cleanup();
     const char* env_timeout = getenv("XWAVE_IDLE_TIMEOUT_SEC");
     int timeout = env_timeout ? atoi(env_timeout) : 1800;
+    if (timeout <= 0) timeout = 1800;
     debug_log("gc_sessions: idle_timeout_sec=%d", timeout);
-    registry_->cleanup_idle(time(nullptr), timeout);
+    std::vector<SessionInfo> sessions;
+    registry_->load_all(sessions);
+    time_t now = time(nullptr);
+    for (const auto& session : sessions) {
+        time_t last = session.last_active ? session.last_active : session.created_at;
+        if (last > 0 && now - last > timeout) {
+            debug_log("gc_sessions: removing_idle session=%d pid=%d idle_sec=%ld timeout_sec=%d",
+                      session.session_id,
+                      session.server_pid,
+                      static_cast<long>(now - last),
+                      timeout);
+            stop_process(session, true, true);
+        }
+    }
     cleanup();
     debug_log("gc_sessions: done");
     return true;

@@ -2768,6 +2768,8 @@ int server_main(int argc, char** argv) {
     if (idle_timeout <= 0) idle_timeout = 1800;
     server_debug_log("server_main: idle_timeout_sec=%d", idle_timeout);
     time_t last_active = time(nullptr);
+    bool idle_timeout_exit = false;
+    bool quit_requested = false;
 
     // Accept loop
     while (true) {
@@ -2780,7 +2782,13 @@ int server_main(int argc, char** argv) {
         int ready = select(g_srv_fd + 1, &rfds, nullptr, nullptr, &tv);
         if (ready < 0) continue;
         if (ready == 0) {
-            if (time(nullptr) - last_active > idle_timeout) break;
+            if (time(nullptr) - last_active > idle_timeout) {
+                idle_timeout_exit = true;
+                server_debug_log("server_main: idle_timeout_exit idle_sec=%ld timeout_sec=%d",
+                                  static_cast<long>(time(nullptr) - last_active),
+                                  idle_timeout);
+                break;
+            }
             continue;
         }
 
@@ -2792,10 +2800,17 @@ int server_main(int argc, char** argv) {
         close(client_fd);
         last_active = time(nullptr);
 
-        if (quit) break;
+        if (quit) {
+            quit_requested = true;
+            server_debug_log("server_main: quit_requested");
+            break;
+        }
     }
 
     // Cleanup
+    server_debug_log("server_main: cleanup_begin reason=%s",
+                     idle_timeout_exit ? "idle_timeout" :
+                     (quit_requested ? "quit" : "loop_exit"));
     close(g_srv_fd);
     unlink(g_sock_path);
     if (g_fsdb_file) {
