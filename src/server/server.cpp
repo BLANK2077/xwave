@@ -34,6 +34,7 @@
 #include <map>
 #include <sstream>
 #include <functional>
+#include <cstdarg>
 
 // NPI headers
 #include "npi.h"
@@ -57,8 +58,40 @@ static unsigned long long g_fsdb_inode = 0;
 static xwave::ApbAnalyzer g_apb_analyzer;
 static xwave::AxiAnalyzer g_axi_analyzer;
 static xwave::EventAnalyzer g_event_analyzer;
+static FILE* g_debug_log = nullptr;
+
+static bool server_debug_enabled() {
+    const char* env = getenv("XWAVE_DEBUG");
+    return env && env[0] != '\0' && strcmp(env, "0") != 0 &&
+           strcasecmp(env, "false") != 0 && strcasecmp(env, "off") != 0;
+}
+
+static void server_debug_open_log() {
+    if (!server_debug_enabled() || g_session_id <= 0) return;
+    char log_path[SOCK_PATH_LEN];
+    get_debug_log_path(log_path, g_session_id);
+    g_debug_log = fopen(log_path, "a");
+    if (g_debug_log) {
+        time_t now = time(nullptr);
+        fprintf(g_debug_log, "=== xwave server debug session=%d time=%ld ===\n",
+                g_session_id, static_cast<long>(now));
+        fflush(g_debug_log);
+    }
+}
+
+static void server_debug_log(const char* fmt, ...) {
+    if (!g_debug_log) return;
+    fprintf(g_debug_log, "[server] ");
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g_debug_log, fmt, ap);
+    va_end(ap);
+    fprintf(g_debug_log, "\n");
+    fflush(g_debug_log);
+}
 
 static void cleanup_and_exit(int sig) {
+    server_debug_log("cleanup_and_exit: signal=%d", sig);
     if (g_srv_fd >= 0) {
         close(g_srv_fd);
     }
@@ -74,6 +107,11 @@ static void cleanup_and_exit(int sig) {
         registry.remove(g_session_id);
     }
     npi_end();
+    if (g_debug_log) {
+        server_debug_log("cleanup_and_exit: done");
+        fclose(g_debug_log);
+        g_debug_log = nullptr;
+    }
     exit(0);
 }
 
@@ -2608,12 +2646,16 @@ int server_main(int argc, char** argv) {
         fprintf(stderr, "Invalid session ID: %s\n", argv[arg_idx]);
         return 1;
     }
+    server_debug_open_log();
+    server_debug_log("server_main: parsed_session_id=%d", g_session_id);
     arg_idx++;
 
     // Parse FSDB file
     const char* fsdb_file = argv[arg_idx];
     g_fsdb_file_path = fsdb_file;
     stat_fsdb(g_fsdb_mtime, g_fsdb_size, g_fsdb_dev, g_fsdb_inode);
+    server_debug_log("server_main: fsdb=%s stat mtime=%ld size=%lld dev=%llu inode=%llu",
+                     fsdb_file, g_fsdb_mtime, g_fsdb_size, g_fsdb_dev, g_fsdb_inode);
 
     // Redirect stdout to capture NPI init messages, but keep a copy
     int stdout_copy = dup(STDOUT_FILENO);
@@ -2621,30 +2663,46 @@ int server_main(int argc, char** argv) {
     // Initialize NPI
     int npi_argc = 1;
     char** npi_argv = argv;
+    server_debug_log("server_main: npi_init_begin");
     int result = npi_init(npi_argc, npi_argv);
     if (result == 0) {
+        server_debug_log("server_main: npi_init_failed");
         dprintf(stdout_copy, "[Session %d] ERROR: npi_init failed\n", g_session_id);
         close(stdout_copy);
+        if (g_debug_log) {
+            fclose(g_debug_log);
+            g_debug_log = nullptr;
+        }
         return 1;
     }
+    server_debug_log("server_main: npi_init_ok");
 
+    server_debug_log("server_main: npi_fsdb_open_begin fsdb=%s", fsdb_file);
     g_fsdb_file = npi_fsdb_open(fsdb_file);
     if (!g_fsdb_file) {
+        server_debug_log("server_main: npi_fsdb_open_failed fsdb=%s", fsdb_file);
         dprintf(stdout_copy, "[Session %d] ERROR: npi_fsdb_open failed: %s\n", g_session_id, fsdb_file);
         npi_end();
         close(stdout_copy);
+        if (g_debug_log) {
+            fclose(g_debug_log);
+            g_debug_log = nullptr;
+        }
         return 1;
     }
+    server_debug_log("server_main: npi_fsdb_open_ok");
 
     npiFsdbTime minTime, maxTime;
     npi_fsdb_min_time(g_fsdb_file, &minTime);
     npi_fsdb_max_time(g_fsdb_file, &maxTime);
+    server_debug_log("server_main: fsdb_time min=%llu max=%llu", minTime, maxTime);
 
     dprintf(stdout_copy, "[Session %d] Ready (FSDB: %llu ~ %llu)\n", g_session_id, minTime, maxTime);
     fflush(stdout);
     close(stdout_copy);
 
     // Now daemonize I/O
+    server_debug_log("server_main: daemonize_io");
     daemonize_io();
 
     // Set up signal handlers
@@ -2652,40 +2710,63 @@ int server_main(int argc, char** argv) {
     signal(SIGINT, cleanup_and_exit);
 
     // Create socket
+    server_debug_log("server_main: socket_create_begin");
     g_srv_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (g_srv_fd < 0) {
+        server_debug_log("server_main: socket_create_failed errno=%d(%s)", errno, strerror(errno));
         npi_fsdb_close(g_fsdb_file);
         npi_end();
+        if (g_debug_log) {
+            fclose(g_debug_log);
+            g_debug_log = nullptr;
+        }
         return 1;
     }
+    server_debug_log("server_main: socket_create_ok fd=%d", g_srv_fd);
 
     get_sock_path(g_sock_path, g_session_id);
     unlink(g_sock_path);
+    server_debug_log("server_main: socket_path=%s", g_sock_path);
 
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, g_sock_path, sizeof(addr.sun_path) - 1);
 
+    server_debug_log("server_main: socket_bind_begin path=%s", g_sock_path);
     if (bind(g_srv_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        server_debug_log("server_main: socket_bind_failed errno=%d(%s)", errno, strerror(errno));
         close(g_srv_fd);
         npi_fsdb_close(g_fsdb_file);
         npi_end();
+        if (g_debug_log) {
+            fclose(g_debug_log);
+            g_debug_log = nullptr;
+        }
         return 1;
     }
     chmod(g_sock_path, 0600);
+    server_debug_log("server_main: socket_bind_ok");
 
+    server_debug_log("server_main: socket_listen_begin");
     if (listen(g_srv_fd, 8) < 0) {
+        server_debug_log("server_main: socket_listen_failed errno=%d(%s)", errno, strerror(errno));
         close(g_srv_fd);
         unlink(g_sock_path);
         npi_fsdb_close(g_fsdb_file);
         npi_end();
+        if (g_debug_log) {
+            fclose(g_debug_log);
+            g_debug_log = nullptr;
+        }
         return 1;
     }
+    server_debug_log("server_main: socket_listen_ok");
 
     const char* env_timeout = getenv("XWAVE_IDLE_TIMEOUT_SEC");
     int idle_timeout = env_timeout ? atoi(env_timeout) : 1800;
     if (idle_timeout <= 0) idle_timeout = 1800;
+    server_debug_log("server_main: idle_timeout_sec=%d", idle_timeout);
     time_t last_active = time(nullptr);
 
     // Accept loop
@@ -2726,6 +2807,11 @@ int server_main(int argc, char** argv) {
         registry.remove(g_session_id);
     }
     npi_end();
+    if (g_debug_log) {
+        server_debug_log("server_main: normal_exit");
+        fclose(g_debug_log);
+        g_debug_log = nullptr;
+    }
 
     return 0;
 }

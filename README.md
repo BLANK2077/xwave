@@ -290,12 +290,17 @@ Use this to confirm real FSDB signal paths, especially for SystemVerilog arrays 
 tools/xwave-env session list                # List all sessions.
 tools/xwave-env session doctor -s 1         # Diagnose health.
 tools/xwave-env session doctor -s 1 -json   # Diagnose in JSON.
-tools/xwave-env session gc                  # Clean stale/idle sessions.
-tools/xwave-env session kill 1              # Kill one session.
+tools/xwave-env session doctor -s 1 --debug # Print lifecycle diagnostics to stderr.
+tools/xwave-env session gc --debug          # Clean stale/idle sessions with diagnostics.
+tools/xwave-env session kill 1 --debug      # Kill one session with diagnostics.
 tools/xwave-env session kill all            # Kill all sessions.
 ```
 
 `open` canonicalizes the FSDB path and reuses a healthy session for the same file. Sessions record FSDB mtime/size/dev/inode. If the file changes, the next query reports the change and automatically restarts the daemon while preserving the session ID and loaded configs.
+
+For session creation failures, run `tools/xwave-env open <fsdb> --debug` or set `XWAVE_DEBUG=1`. Debug output goes to stderr and server-side startup details are written to `~/.xwave.<sid>.debug.log`. The debug trace identifies stages such as FSDB stat, registry lock, fork/exec, `npi_init`, `npi_fsdb_open`, socket bind/listen, connect, and PING. `XWAVE_SESSION_START_TIMEOUT_SEC` controls the startup wait and defaults to 60 seconds; increase it for very large FSDB files or slow network storage.
+
+Common causes of `Failed to create session` are an inaccessible FSDB, missing Verdi/NPI runtime or license, `npi_fsdb_open` failure, a large FSDB taking longer than the startup timeout, or `$HOME` not allowing the Unix domain socket/registry files. In LSF environments, also confirm that `open` and subsequent commands run on the same dedicated queue/host.
 
 ---
 
@@ -303,11 +308,11 @@ tools/xwave-env session kill all            # Kill all sessions.
 
 | Command | Description |
 |---|---|
-| `xwave open <fsdb-file>` | Open an FSDB and create a session |
+| `xwave open <fsdb-file> [--debug]` | Open an FSDB and create a session |
 | `xwave session list` | List all active sessions |
-| `xwave session doctor -s <sid> [-json]` | Diagnose a session |
-| `xwave session gc` | Clean stale/idle sessions |
-| `xwave session kill <id\|all>` | Kill one or all sessions |
+| `xwave session doctor -s <sid> [-json] [--debug]` | Diagnose a session |
+| `xwave session gc [--debug]` | Clean stale/idle sessions |
+| `xwave session kill <id\|all> [--debug]` | Kill one or all sessions |
 | `xwave scope <path> [-recursive] [-json] [-s <sid>]` | List FSDB signals under a scope |
 | `xwave value <sig> <time> [-b\|-d] [-s <sid>]` | Query one signal value |
 | `xwave list new <name> [-s <sid>]` | Create a list |
@@ -406,5 +411,7 @@ xwave/
 - `list diff` requires at least two signals.
 - Sessions run as background daemons and survive terminal exits. Use `session kill` or `session gc` to clean them.
 - The default idle timeout is 1800 seconds and can be overridden with `XWAVE_IDLE_TIMEOUT_SEC`.
+- Session startup waits up to 60 seconds by default and can be overridden with `XWAVE_SESSION_START_TIMEOUT_SEC`.
+- Use `--debug` or `XWAVE_DEBUG=1` for session creation/restart diagnostics; server startup logs are stored as `~/.xwave.<sid>.debug.log`.
 - Default value output is hexadecimal and formatted as `'h...`.
 - Event configs are bound by `Session + FSDB`. Old `.xwave.events` records without FSDB metadata are not automatically reused; rerun `xwave event <json> -n <name>` to migrate them.

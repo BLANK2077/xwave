@@ -299,12 +299,17 @@ tools/xwave-env scope xring_tb_top.u_dut.u_pkt_fetch -recursive -json
 tools/xwave-env session list                # 列出所有 Session
 tools/xwave-env session doctor -s 1         # 诊断健康状态
 tools/xwave-env session doctor -s 1 -json   # JSON 格式诊断
-tools/xwave-env session gc                  # 清理 stale/idle Session
-tools/xwave-env session kill 1              # 关闭指定 Session
+tools/xwave-env session doctor -s 1 --debug # 输出 Session 生命周期诊断
+tools/xwave-env session gc --debug          # 带诊断清理 stale/idle Session
+tools/xwave-env session kill 1 --debug      # 带诊断关闭指定 Session
 tools/xwave-env session kill all            # 关闭所有 Session
 ```
 
 `open` 会规范化 FSDB 路径并复用同一文件的健康 Session。Session 记录 FSDB 的 mtime/size/dev/inode；若文件发生变化，下一次查询会提示并自动重启 daemon，保留原 Session ID 和已加载配置。
+
+如果遇到 `Failed to create session`，先运行 `tools/xwave-env open <fsdb> --debug`，或设置 `XWAVE_DEBUG=1`。debug 信息输出到 stderr，server 侧启动细节写入 `~/.xwave.<sid>.debug.log`。诊断会标出 FSDB stat、registry lock、fork/exec、`npi_init`、`npi_fsdb_open`、socket bind/listen、connect、PING 等阶段。`XWAVE_SESSION_START_TIMEOUT_SEC` 控制启动等待时间，默认 60 秒；大 FSDB 或网络盘较慢时可以增大。
+
+常见创建失败原因包括 FSDB 不可访问、Verdi/NPI 运行环境或 license 缺失、`npi_fsdb_open` 失败、大 FSDB 打开时间超过启动等待、`$HOME` 不支持 Unix domain socket/registry 文件。在 LSF 环境里还要确认 `open` 和后续命令都通过同一个专用队列或固定 host 运行。
 
 ---
 
@@ -312,11 +317,11 @@ tools/xwave-env session kill all            # 关闭所有 Session
 
 | 命令 | 说明 |
 |------|------|
-| `xwave open <fsdb-file>` | 打开 FSDB，创建新 Session |
+| `xwave open <fsdb-file> [--debug]` | 打开 FSDB，创建新 Session |
 | `xwave session list` | 列出所有活跃 Session |
-| `xwave session doctor -s <sid> [-json]` | 诊断指定 Session 健康状态 |
-| `xwave session gc` | 清理 stale/idle Session |
-| `xwave session kill <id\|all>` | 关闭指定或所有 Session |
+| `xwave session doctor -s <sid> [-json] [--debug]` | 诊断指定 Session 健康状态 |
+| `xwave session gc [--debug]` | 清理 stale/idle Session |
+| `xwave session kill <id\|all> [--debug]` | 关闭指定或所有 Session |
 | `xwave scope <path> [-recursive] [-json] [-s <sid>]` | 列出指定 scope 下的 FSDB 信号 |
 | `xwave value <sig> <time> [-b\|-d] [-s <sid>]` | 单信号值查询 |
 | `xwave list new <name> [-s <sid>]` | 创建新 List |
@@ -415,5 +420,7 @@ xwave/
 - `list diff` 需至少 2 个信号
 - Session 以后台 daemon 运行，终端关闭不影响；用 `session kill` 或 `session gc` 清理
 - 默认 idle timeout 为 1800 秒，可通过 `XWAVE_IDLE_TIMEOUT_SEC` 覆盖
+- Session 启动默认最多等待 60 秒，可通过 `XWAVE_SESSION_START_TIMEOUT_SEC` 覆盖
+- 使用 `--debug` 或 `XWAVE_DEBUG=1` 查看 Session 创建/重启诊断；server 启动日志保存在 `~/.xwave.<sid>.debug.log`
 - 默认输出为十六进制，格式为 `'h...`
 - event 配置按 `Session + FSDB` 绑定；旧版 `.xwave.events` 记录缺少 FSDB 元数据，不会被自动复用，重新执行 `xwave event <json> -n <name>` 即可迁移

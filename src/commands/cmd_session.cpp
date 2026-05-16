@@ -18,11 +18,11 @@ namespace xwave {
 void print_help(const char* prog) {
     printf("XWave - NPI-based FSDB Waveform Query Tool\n\n");
     printf("Usage:\n");
-    printf("  %s open <fsdb-file>         Open FSDB and create new session\n", prog);
+    printf("  %s open <fsdb-file> [--debug]  Open FSDB and create new session\n", prog);
     printf("  %s session list             List all active sessions\n", prog);
-    printf("  %s session kill <id|all>    Kill a specific session or all\n", prog);
-    printf("  %s session gc               Clean stale and idle sessions\n", prog);
-    printf("  %s session doctor -s <sid> [-json]  Diagnose a session\n", prog);
+    printf("  %s session kill <id|all> [--debug]  Kill a specific session or all\n", prog);
+    printf("  %s session gc [--debug]     Clean stale and idle sessions\n", prog);
+    printf("  %s session doctor -s <sid> [-json] [--debug]  Diagnose a session\n", prog);
     printf("  %s value <sig> <time> [-b|-d] [-s <sid>]  Query signal value\n", prog);
     printf("  %s list new <name> [-s <sid>]             Create a signal list\n", prog);
     printf("  %s list add <sig> [-s <sid>] [-l <name>]  Add signal to list\n", prog);
@@ -62,24 +62,28 @@ void print_help(const char* prog) {
 
 static void print_open_help(const char* prog) {
     printf("Usage:\n");
-    printf("  %s open <fsdb-file>\n\n", prog);
+    printf("  %s open <fsdb-file> [--debug]\n\n", prog);
     printf("Description:\n");
     printf("  Open an FSDB waveform and create or reuse a daemon session.\n");
     printf("  The FSDB path is canonicalized; if a healthy session already owns the same\n");
     printf("  file, xwave reuses it instead of opening another daemon.\n\n");
     printf("Arguments:\n");
     printf("  <fsdb-file>  FSDB file path. Relative paths are resolved to canonical paths.\n\n");
+    printf("Options:\n");
+    printf("  --debug      Print session creation diagnostics to stderr. Also enabled by XWAVE_DEBUG=1.\n");
+    printf("               Server startup diagnostics are written to ~/.xwave.<sid>.debug.log.\n\n");
     printf("Session behavior:\n");
     printf("  xwave records mtime, size, device, and inode. Later session commands compare\n");
     printf("  this fingerprint; if the file changed, the daemon is restarted in place.\n");
+    printf("  XWAVE_SESSION_START_TIMEOUT_SEC controls server startup wait time; default is 60 seconds.\n");
 }
 
 static void print_session_help(const char* prog) {
     printf("Usage:\n");
     printf("  %s session list\n", prog);
-    printf("  %s session doctor -s <sid> [-json]\n", prog);
-    printf("  %s session gc\n", prog);
-    printf("  %s session kill <id|all>\n\n", prog);
+    printf("  %s session doctor -s <sid> [-json] [--debug]\n", prog);
+    printf("  %s session gc [--debug]\n", prog);
+    printf("  %s session kill <id|all> [--debug]\n\n", prog);
     printf("Subcommands:\n");
     printf("  list              Show session ID, PID, RSS, created time, last active time, and FSDB path.\n");
     printf("  doctor            Check registry, FSDB fingerprint, process, socket, and PING/PONG health.\n");
@@ -87,9 +91,12 @@ static void print_session_help(const char* prog) {
     printf("  kill <id|all>     Stop one daemon or all daemons and remove related session records.\n\n");
     printf("Options:\n");
     printf("  -s <sid>          Session ID to diagnose. Required by session doctor.\n");
-    printf("  -json             Print doctor output as JSON.\n\n");
+    printf("  -json             Print doctor output as JSON.\n");
+    printf("  --debug           Print session lifecycle diagnostics to stderr. Also enabled by XWAVE_DEBUG=1.\n\n");
     printf("Environment:\n");
     printf("  XWAVE_IDLE_TIMEOUT_SEC overrides the default 1800-second idle timeout used by gc.\n");
+    printf("  XWAVE_SESSION_START_TIMEOUT_SEC overrides the default 60-second startup wait.\n");
+    printf("  XWAVE_DEBUG=1 enables debug diagnostics for session commands.\n");
 }
 
 static void print_value_help(const char* prog) {
@@ -414,14 +421,16 @@ int cmd_session_doctor(int argc, char** argv) {
             session_id = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-json") == 0) {
             json = true;
+        } else if (strcmp(argv[i], "--debug") == 0) {
+            // main() already enables XWAVE_DEBUG; accept the option here.
         } else {
-            fprintf(stderr, "Usage: %s session doctor -s <sid> [-json]\n", argv[0]);
+            fprintf(stderr, "Usage: %s session doctor -s <sid> [-json] [--debug]\n", argv[0]);
             return 1;
         }
     }
 
     if (session_id <= 0) {
-        fprintf(stderr, "Usage: %s session doctor -s <sid> [-json]\n", argv[0]);
+        fprintf(stderr, "Usage: %s session doctor -s <sid> [-json] [--debug]\n", argv[0]);
         fprintf(stderr, "Error: session doctor requires -s <sid>\n");
         return 1;
     }

@@ -60,3 +60,10 @@ inline void get_registry_path(char* buf) {
     if (!home) home = "/tmp";
     snprintf(buf, SOCK_PATH_LEN, "%s/%s", home, REGISTRY_FILE);
 }
+
+// Get server-side debug log path for a session
+inline void get_debug_log_path(char* buf, int session_id) {
+    const char* home = getenv("HOME");
+    if (!home) home = "/tmp";
+    snprintf(buf, SOCK_PATH_LEN, "%s/%s.%d.debug.log", home, SOCK_PATH_PREFIX, session_id);
+}

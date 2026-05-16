@@ -25,6 +25,22 @@ struct SessionHealth {
     SessionInfo info;
 };
 
+struct SessionDebugOptions {
+    bool enabled = false;
+};
+
+struct WaitForServerResult {
+    bool ok = false;
+    std::string reason;
+    long elapsed_ms = 0;
+    bool socket_exists = false;
+    bool connect_ok = false;
+    bool ping_ok = false;
+    bool child_exited = false;
+    int child_status = 0;
+    int timeout_sec = 0;
+};
+
 const char* session_health_status_name(SessionHealthStatus status);
 
 // Session manager - high-level session lifecycle management
@@ -32,6 +48,9 @@ class SessionManager {
 public:
     SessionManager();
     ~SessionManager();
+
+    void set_debug_enabled(bool enabled);
+    bool debug_enabled() const;
 
     // Create a new session, returns session ID (0 on failure)
     // This spawns the server process
@@ -78,6 +97,7 @@ public:
 
 private:
     std::unique_ptr<SessionRegistry> registry_;
+    SessionDebugOptions debug_;
 
     // Fork and exec server process
     pid_t spawn_server(int session_id, const std::string& fsdb_file);
@@ -86,8 +106,9 @@ private:
     bool populate_fsdb_metadata(const std::string& fsdb_file, SessionInfo& session);
     bool current_fsdb_metadata(const SessionInfo& session, SessionInfo& current);
     bool fsdb_metadata_matches(const SessionInfo& expected, const SessionInfo& current) const;
-    bool wait_for_server(int session_id, pid_t pid);
+    WaitForServerResult wait_for_server(int session_id, pid_t pid);
     std::string canonicalize_fsdb_path(const std::string& fsdb_file);
+    void debug_log(const char* fmt, ...) const;
 };
 
 } // namespace xtrace
