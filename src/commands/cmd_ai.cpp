@@ -588,6 +588,17 @@ static bool query_value(int session_id,
     return capture_server_text(session_id, cmd, raw, err);
 }
 
+static Json resolve_time_spec_json(int session_id,
+                                   const std::string& spec,
+                                   bool allow_max,
+                                   std::string& err) {
+    Json out;
+    if (spec.empty()) return out;
+    std::string cmd = std::string(CMD_TIME_RESOLVE) + " " + spec + (allow_max ? " allow_max" : "");
+    if (!capture_server_json(session_id, cmd, out, err)) return Json();
+    return out;
+}
+
 enum class Tri { False, True, Unknown };
 
 static Tri tri_not(Tri v) {
@@ -737,6 +748,7 @@ static int run_query(const Json& req, long long elapsed_ms);
 static void print_actions() {
     Json actions = Json::array({
         "session.open", "session.list", "session.doctor", "session.gc", "session.kill",
+        "cursor.set", "cursor.get", "cursor.list", "cursor.delete", "cursor.use",
         "scope.list",
         "value.at", "value.batch_at",
         "list.create", "list.add", "list.delete", "list.show", "list.value_at", "list.validate", "list.diff",
@@ -754,6 +766,7 @@ static void print_actions() {
     out["actions"] = actions;
     out["implemented"] = Json::array({
         "session.open", "session.list", "session.doctor", "session.gc", "session.kill",
+        "cursor.set", "cursor.get", "cursor.list", "cursor.delete", "cursor.use",
         "scope.list", "value.at", "value.batch_at",
         "list.create", "list.add", "list.delete", "list.show", "list.value_at", "list.validate", "list.diff",
         "apb.config.load", "apb.config.list", "apb.query", "apb.cursor",
@@ -780,9 +793,13 @@ static void print_schema() {
         {"request_id", {{"type", "string"}}},
         {"action", {{"type", "string"}}},
         {"target", {{"type", "object"}}},
-        {"args", {{"type", "object"}}},
+        {"args", {{"type", "object"}, {"description", "Action arguments. Time fields accept TimeSpec strings such as 100ns, @deadlock, @deadlock-20ns, or @+5ns. Structured TimeSpec objects are planned but not implemented in this build."}}},
         {"limits", {{"type", "object"}}},
         {"output", {{"type", "object"}}}
+    };
+    schema["xwave_time_spec"] = {
+        {"implemented", Json::array({"absolute time", "@cursor", "@cursor+duration", "@cursor-duration", "@+duration", "@-duration"})},
+        {"planned", Json::array({"structured TimeSpec object", "cycle offset"})}
     };
     print_json(schema);
 }
@@ -799,6 +816,7 @@ static int print_error_and_return(const Json& req,
 static bool action_known(const std::string& action) {
     static const std::vector<std::string> implemented = {
         "session.open", "session.list", "session.doctor", "session.gc", "session.kill",
+        "cursor.set", "cursor.get", "cursor.list", "cursor.delete", "cursor.use",
         "scope.list", "value.at", "value.batch_at",
         "list.create", "list.add", "list.delete", "list.show", "list.value_at", "list.validate", "list.diff",
         "apb.config.load", "apb.config.list", "apb.query", "apb.cursor",
@@ -815,6 +833,7 @@ static bool action_known(const std::string& action) {
 
 static bool server_ai_action(const std::string& action) {
     static const std::vector<std::string> server_actions = {
+        "cursor.set", "cursor.get", "cursor.list", "cursor.delete", "cursor.use",
         "expr.eval_at",
         "window.verify", "signal.changes", "signal.stability", "signal.trend",
         "inspect_signal", "detect_anomaly", "handshake.inspect",
@@ -927,6 +946,11 @@ static int run_query(const Json& req, long long elapsed_ms) {
         if (!capture_server_json(sid, cmd, data, err)) {
             std::string code = err.find("Signal not found") != std::string::npos ? "SIGNAL_NOT_FOUND" :
                                err.find("Clock signal not found") != std::string::npos ? "SIGNAL_NOT_FOUND" :
+                               err.find("CURSOR_NOT_FOUND") != std::string::npos ? "CURSOR_NOT_FOUND" :
+                               err.find("TIME_OUT_OF_RANGE") != std::string::npos ? "TIME_OUT_OF_RANGE" :
+                               err.find("CLOCK_OFFSET_UNSUPPORTED") != std::string::npos ? "CLOCK_OFFSET_UNSUPPORTED" :
+                               err.find("Invalid time") != std::string::npos ? "TIME_SPEC_INVALID" :
+                               err.find("Invalid TimeSpec") != std::string::npos ? "TIME_SPEC_INVALID" :
                                err.find("config not found") != std::string::npos ? "INVALID_REQUEST" :
                                err.find("expression") != std::string::npos ? "EXPR_PARSE_FAILED" :
                                "WAVE_QUERY_FAILED";
@@ -934,6 +958,20 @@ static int run_query(const Json& req, long long elapsed_ms) {
         }
         Json out = ok_out(&info);
         out["data"] = data;
+        Json tr = args.value("time_range", Json::object());
+        std::string begin_spec = string_or(tr, "begin", string_or(args, "begin", ""));
+        std::string end_spec = string_or(tr, "end", string_or(args, "end", ""));
+        if (!begin_spec.empty() || !end_spec.empty()) {
+            Json range;
+            if (!begin_spec.empty()) range["begin"] = resolve_time_spec_json(sid, begin_spec, false, err);
+            if (!end_spec.empty()) range["end"] = resolve_time_spec_json(sid, end_spec, true, err);
+            out["data"]["resolved_time_range"] = range;
+        }
+        std::string at_spec = string_or(args, "at", string_or(args, "time", ""));
+        if (!at_spec.empty() && out["data"].is_object() && !out["data"].contains("resolved_time")) {
+            Json resolved = resolve_time_spec_json(sid, at_spec, false, err);
+            if (!resolved.is_null()) out["data"]["resolved_time"] = resolved;
+        }
         if (data.contains("truncated")) out["meta"]["truncated"] = data["truncated"];
         if (data.contains("findings")) out["findings"] = data["findings"];
         if (action == "window.verify") {
@@ -961,19 +999,30 @@ static int run_query(const Json& req, long long elapsed_ms) {
 
     if (action == "value.at") {
         std::string signal, time;
-        if (!get_string(args, "signal", signal) || !get_string(args, "time", time)) {
-            return print_error_and_return(req, action, "MISSING_FIELD", "value.at requires args.signal and args.time", elapsed_ms);
+        if (!get_string(args, "signal", signal)) {
+            return print_error_and_return(req, action, "MISSING_FIELD", "value.at requires args.signal", elapsed_ms);
+        }
+        if (!get_string(args, "at", time) && !get_string(args, "time", time)) {
+            return print_error_and_return(req, action, "MISSING_FIELD", "value.at requires args.time or args.at", elapsed_ms);
         }
         std::string raw;
         if (!query_value(sid, signal, time, fmt_char(args), raw, err)) {
             bool not_found = err.find("Signal not found") != std::string::npos ||
                              err.find("Failed to read value for signal") != std::string::npos;
-            return print_error_and_return(req, action, not_found ? "SIGNAL_NOT_FOUND" : "WAVE_QUERY_FAILED", err, elapsed_ms);
+            std::string code = not_found ? "SIGNAL_NOT_FOUND" :
+                               err.find("CURSOR_NOT_FOUND") != std::string::npos ? "CURSOR_NOT_FOUND" :
+                               err.find("TIME_OUT_OF_RANGE") != std::string::npos ? "TIME_OUT_OF_RANGE" :
+                               err.find("CLOCK_OFFSET_UNSUPPORTED") != std::string::npos ? "CLOCK_OFFSET_UNSUPPORTED" :
+                               err.find("Invalid") != std::string::npos ? "TIME_SPEC_INVALID" :
+                               "WAVE_QUERY_FAILED";
+            return print_error_and_return(req, action, code, err, elapsed_ms);
         }
         Json out = ok_out(&info);
         out["summary"] = {{"signal", signal}, {"time", time}, {"known", !contains_xz(raw)}};
         out["data"]["signal"] = signal;
         out["data"]["time"] = time;
+        Json resolved = resolve_time_spec_json(sid, time, false, err);
+        if (!resolved.is_null()) out["data"]["resolved_time"] = resolved;
         out["data"]["value"] = make_value_object(raw);
         print_json(out);
         return 0;
@@ -981,8 +1030,9 @@ static int run_query(const Json& req, long long elapsed_ms) {
 
     if (action == "value.batch_at") {
         std::string time;
-        if (!get_string(args, "time", time) || !args.contains("signals") || !args["signals"].is_array()) {
-            return print_error_and_return(req, action, "MISSING_FIELD", "value.batch_at requires args.time and args.signals[]", elapsed_ms);
+        if ((!get_string(args, "at", time) && !get_string(args, "time", time)) ||
+            !args.contains("signals") || !args["signals"].is_array()) {
+            return print_error_and_return(req, action, "MISSING_FIELD", "value.batch_at requires args.time/args.at and args.signals[]", elapsed_ms);
         }
         Json arr = Json::array();
         int unknown = 0, missing = 0;
@@ -1007,6 +1057,8 @@ static int run_query(const Json& req, long long elapsed_ms) {
         }
         Json out = ok_out(&info);
         out["summary"] = {{"time", time}, {"signal_count", arr.size()}, {"unknown_count", unknown}, {"missing_count", missing}};
+        Json resolved = resolve_time_spec_json(sid, time, false, err);
+        if (!resolved.is_null()) out["data"]["resolved_time"] = resolved;
         out["data"]["values"] = arr;
         print_json(out);
         return missing == 0 ? 0 : 1;
@@ -1069,7 +1121,9 @@ static int run_query(const Json& req, long long elapsed_ms) {
         }
         if (action == "list.value_at") {
             std::string time;
-            if (!get_string(args, "time", time)) return print_error_and_return(req, action, "MISSING_FIELD", "list.value_at requires args.time", elapsed_ms);
+            if (!get_string(args, "at", time) && !get_string(args, "time", time)) {
+                return print_error_and_return(req, action, "MISSING_FIELD", "list.value_at requires args.time or args.at", elapsed_ms);
+            }
             Json data;
             std::string cmd = std::string(CMD_LIST_VALUE) + " " + name + " " + time + " " + fmt_char(args) + " json";
             bool ok = capture_server_json(sid, cmd, data, err);
@@ -1077,6 +1131,8 @@ static int run_query(const Json& req, long long elapsed_ms) {
             fill_session(out, info);
             out["summary"] = {{"name", name}, {"time", time}};
             out["data"] = data;
+            Json resolved = resolve_time_spec_json(sid, time, false, err);
+            if (!resolved.is_null()) out["data"]["resolved_time"] = resolved;
             if (!ok) out["error"] = {{"code", "SIGNAL_NOT_FOUND"}, {"message", err}, {"recoverable", true}, {"candidates", Json::array()}, {"suggested_actions", Json::array()}};
             print_json(out);
             return ok ? 0 : 1;
@@ -1099,7 +1155,12 @@ static int run_query(const Json& req, long long elapsed_ms) {
             if (!capture_server_text(sid, std::string(CMD_LIST_DIFF) + " " + name + " " + begin + " " + end, payload, err)) {
                 return print_error_and_return(req, action, "WAVE_QUERY_FAILED", err, elapsed_ms);
             }
-            Json out = ok_out(&info); out["summary"] = {{"name", name}, {"diff_time", payload}}; out["data"]["time"] = payload; print_json(out); return 0;
+            Json out = ok_out(&info);
+            out["summary"] = {{"name", name}, {"diff_time", payload}};
+            out["data"]["time"] = payload;
+            out["data"]["resolved_time_range"]["begin"] = resolve_time_spec_json(sid, begin, false, err);
+            out["data"]["resolved_time_range"]["end"] = resolve_time_spec_json(sid, end, true, err);
+            print_json(out); return 0;
         }
     }
 
@@ -1221,12 +1282,19 @@ static int run_query(const Json& req, long long elapsed_ms) {
             cmd = std::string(action == "event.find" ? CMD_EVENT_FIND : CMD_EVENT_EXPORT) + " " + name + " " + begin + " " + end + " " + std::to_string(limit) + " " + mode + " expr " + expr;
         }
         Json data; if (!capture_server_json(sid, cmd, data, err)) return print_error_and_return(req, action, "WAVE_QUERY_FAILED", err, elapsed_ms);
-        Json out = ok_out(&info); out["summary"] = {{"name", name}, {"begin", begin}, {"end", end}}; out["data"]["events"] = data; print_json(out); return 0;
+        Json out = ok_out(&info);
+        out["summary"] = {{"name", name}, {"begin", begin}, {"end", end}};
+        out["data"]["events"] = data;
+        out["data"]["resolved_time_range"]["begin"] = resolve_time_spec_json(sid, begin, false, err);
+        out["data"]["resolved_time_range"]["end"] = resolve_time_spec_json(sid, end, true, err);
+        print_json(out); return 0;
     }
 
     if (action == "verify.conditions") {
-        std::string time; if (!get_string(args, "time", time) || !args.contains("conditions") || !args["conditions"].is_array()) {
-            return print_error_and_return(req, action, "MISSING_FIELD", "verify.conditions requires args.time and args.conditions[]", elapsed_ms);
+        std::string time;
+        if ((!get_string(args, "at", time) && !get_string(args, "time", time)) ||
+            !args.contains("conditions") || !args["conditions"].is_array()) {
+            return print_error_and_return(req, action, "MISSING_FIELD", "verify.conditions requires args.time/args.at and args.conditions[]", elapsed_ms);
         }
         Json checks = Json::array();
         int passed = 0, failed = 0, unknown = 0;
@@ -1251,6 +1319,8 @@ static int run_query(const Json& req, long long elapsed_ms) {
         }
         Json out = ok_out(&info);
         out["summary"] = {{"all_passed", failed == 0 && unknown == 0}, {"passed", passed}, {"failed", failed}, {"unknown", unknown}};
+        Json resolved = resolve_time_spec_json(sid, time, false, err);
+        if (!resolved.is_null()) out["data"]["resolved_time"] = resolved;
         out["data"]["checks"] = checks;
         print_json(out);
         return 0;
@@ -1258,8 +1328,9 @@ static int run_query(const Json& req, long long elapsed_ms) {
 
     if (action == "expr.eval_at") {
         std::string time, expr;
-        if (!get_string(args, "time", time) || !get_string(args, "expr", expr) || !args.contains("signals") || !args["signals"].is_object()) {
-            return print_error_and_return(req, action, "MISSING_FIELD", "expr.eval_at requires args.time, args.expr, args.signals", elapsed_ms);
+        if ((!get_string(args, "at", time) && !get_string(args, "time", time)) ||
+            !get_string(args, "expr", expr) || !args.contains("signals") || !args["signals"].is_object()) {
+            return print_error_and_return(req, action, "MISSING_FIELD", "expr.eval_at requires args.time/args.at, args.expr, args.signals", elapsed_ms);
         }
         Json values = Json::object();
         Json operands = Json::array();
@@ -1285,6 +1356,8 @@ static int run_query(const Json& req, long long elapsed_ms) {
         if (!parser.ok()) return print_error_and_return(req, action, "EXPR_PARSE_FAILED", "failed to parse expression", elapsed_ms);
         Json out = ok_out(&info);
         out["summary"] = {{"expr", expr}, {"expr_value", v == Tri::True ? Json(true) : v == Tri::False ? Json(false) : Json(nullptr)}, {"status", tri_text(v)}, {"known", v != Tri::Unknown}};
+        Json resolved = resolve_time_spec_json(sid, time, false, err);
+        if (!resolved.is_null()) out["data"]["resolved_time"] = resolved;
         out["data"]["operands"] = operands;
         out["data"]["unknown_count"] = unknown;
         print_json(out);

@@ -10,7 +10,8 @@ namespace xwave {
 
 int cmd_value(int argc, char** argv) {
     if (argc < 4) {
-        fprintf(stderr, "Usage: %s value <signal> <time> [-b|-d] [-s <sid>]\n\n", argv[0]);
+        fprintf(stderr, "Usage: %s value <signal> <time_spec> [-b|-d] [-s <sid>]\n", argv[0]);
+        fprintf(stderr, "       %s value <signal> --at <time_spec> [-b|-d] [-s <sid>]\n\n", argv[0]);
         print_help(argv[0]);
         return 1;
     }
@@ -20,7 +21,13 @@ int cmd_value(int argc, char** argv) {
     char fmt = 'H';
     int session_id = -1;
 
-    for (int i = 4; i < argc; ++i) {
+    int start = 4;
+    if (strcmp(argv[3], "--at") == 0 && argc >= 5) {
+        time_str = argv[4];
+        start = 5;
+    }
+
+    for (int i = start; i < argc; ++i) {
         if (strcmp(argv[i], "-b") == 0) fmt = 'B';
         else if (strcmp(argv[i], "-d") == 0) fmt = 'D';
         else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {

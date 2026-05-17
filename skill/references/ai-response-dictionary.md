@@ -95,12 +95,13 @@ AI usage:
 Common forms include:
 
 ```text
-time/time_ps/begin/end/begin_ps/end_ps/duration/duration_ps/window_ps/delta_ps
+time/time_ps/begin/end/begin_ps/end_ps/duration/duration_ps/window_ps/delta_ps/resolved_time/resolved_time_range
 ```
 
 AI usage:
 - Prefer numeric `*_ps` fields for sorting, deltas, and window checks.
 - Preserve original text fields for user-facing reports.
+- Prefer `resolved_time` and `resolved_time_range` when a query used TimeSpec input such as `@deadlock-20ns`; do not redo cursor math in the agent.
 
 ## Action Groups
 
@@ -150,6 +151,32 @@ Extraction example:
 tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"scope.list","target":{"session_id":1},"args":{"path":"top","recursive":true},"limits":{"max_rows":20}}' \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print([s.get("name") for s in d.get("data",{}).get("signals",[])])'
 ```
+
+### Cursor Actions
+
+Actions:
+
+```text
+cursor.set/cursor.get/cursor.list/cursor.use/cursor.delete
+```
+
+Common payloads:
+- `data.cursor`
+- `data.cursors`
+- `data.active_cursor`
+- `data.resolved_time`
+
+Extraction:
+
+```bash
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"cursor.list","target":{"session_id":1}}' \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("data",{}).get("active_cursor"), [c.get("name") for c in d.get("data",{}).get("cursors",[])])'
+```
+
+AI usage:
+- Create a cursor when an event time becomes important, then use `@name`, `@name-20ns`, or `@name+5ns` in later time fields.
+- Use `cursor.use` before short active-cursor forms like `@-10ns`.
+- Cycle offsets are reserved and currently return `CLOCK_OFFSET_UNSUPPORTED`.
 
 ### Value Actions
 

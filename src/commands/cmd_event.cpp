@@ -37,24 +37,13 @@ static bool parse_nonnegative_int(const std::string& text, int& value) {
     return true;
 }
 
-static bool parse_nonnegative_time_arg(const char* text, unsigned long long& value) {
-    if (!text || text[0] == '\0' || text[0] == '-') return false;
-    char* end = nullptr;
-    errno = 0;
-    double parsed = strtod(text, &end);
-    if (errno != 0 || end == text || parsed < 0) return false;
-    while (*end && std::isspace(static_cast<unsigned char>(*end))) ++end;
-
-    double multiplier = 1000.0;
-    if (*end != '\0') {
-        if (strcasecmp(end, "us") == 0) multiplier = 1000000.0;
-        else if (strcasecmp(end, "ns") == 0) multiplier = 1000.0;
-        else if (strcasecmp(end, "ps") == 0) multiplier = 1.0;
-        else if (strcasecmp(end, "fs") == 0) multiplier = 0.001;
-        else return false;
+static std::string compact_expr_ws(const std::string& expr) {
+    std::string out;
+    out.reserve(expr.size());
+    for (char c : expr) {
+        if (!std::isspace(static_cast<unsigned char>(c))) out.push_back(c);
     }
-    value = static_cast<unsigned long long>(parsed * multiplier);
-    return true;
+    return out;
 }
 
 static bool read_json_int(const nlohmann::json& j, const char* key, int& value) {
@@ -305,11 +294,6 @@ int cmd_event(int argc, char** argv) {
         else if (strcmp(argv[i], "-e") == 0 && i + 1 < argc) end_str = argv[++i];
         else if (strcmp(argv[i], "-context") == 0 && i + 1 < argc) {
             context_str = argv[++i];
-            unsigned long long parsed_context = 0;
-            if (!parse_nonnegative_time_arg(context_str, parsed_context)) {
-                fprintf(stderr, "Error: -context requires a non-negative time\n");
-                return 1;
-            }
             context_specified = true;
         }
         else if (strcmp(argv[i], "-axi") == 0 && i + 1 < argc) axi_name = argv[++i];
@@ -366,7 +350,7 @@ int cmd_event(int argc, char** argv) {
         protocol_cmd += " " + std::string(apb_name ? apb_name : "-");
     }
     protocol_cmd += " expr ";
-    protocol_cmd += expr;
+    protocol_cmd += compact_expr_ws(expr);
 
     if (!send_command_and_print(session_id, protocol_cmd.c_str())) return 1;
     return 0;

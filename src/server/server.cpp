@@ -11,6 +11,8 @@
 #include "../event/event_analyzer.h"
 #include "../event/event_expr.h"
 #include "../event/event_manager.h"
+#include "../cursor/cursor_manager.h"
+#include "../common/time_spec.h"
 #include "../session/session_registry.h"
 #include "../json.hpp"
 
@@ -217,41 +219,86 @@ static bool parse_user_time(const char* text,
         out_time = 0xFFFFFFFFFFFFFFFFULL;
         return true;
     }
-    if (text[0] == '-') {
-        error = std::string("Invalid time '") + text + "': negative time is not allowed";
-        return false;
-    }
+    ParsedTimeSpec spec;
+    if (!parse_time_spec_text(text, spec, error)) return false;
 
-    char* end = nullptr;
-    errno = 0;
-    double value = strtod(text, &end);
-    if (errno != 0 || end == text || !std::isfinite(value) || value < 0) {
-        error = std::string("Invalid time '") + text + "'";
-        return false;
-    }
-    while (*end && std::isspace(static_cast<unsigned char>(*end))) ++end;
-
-    const char* unit = "ns";
-    if (*end != '\0') {
-        if (strcasecmp(end, "us") == 0) unit = "us";
-        else if (strcasecmp(end, "ns") == 0) unit = "ns";
-        else if (strcasecmp(end, "ps") == 0) unit = "ps";
-        else if (strcasecmp(end, "fs") == 0) unit = "fs";
-        else {
-            error = std::string("Invalid time '") + text
-                  + "': unsupported unit, expected us/ns/ps/fs (FSDB scale "
-                  + fsdb_time_scale() + ")";
+    auto convert_abs = [&](const std::string& source, npiFsdbTime& out) -> bool {
+        if (source.empty() || source[0] == '-') {
+            error = std::string("Invalid time '") + source + "': negative time is not allowed";
             return false;
         }
+        char* end = nullptr;
+        errno = 0;
+        double value = strtod(source.c_str(), &end);
+        if (errno != 0 || end == source.c_str() || !std::isfinite(value) || value < 0) {
+            error = std::string("Invalid time '") + source + "'";
+            return false;
+        }
+        while (*end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+        const char* unit = "ns";
+        if (*end != '\0') {
+            if (strcasecmp(end, "us") == 0) unit = "us";
+            else if (strcasecmp(end, "ns") == 0) unit = "ns";
+            else if (strcasecmp(end, "ps") == 0) unit = "ps";
+            else if (strcasecmp(end, "fs") == 0) unit = "fs";
+            else {
+                error = std::string("Invalid time '") + source
+                      + "': unsupported unit, expected us/ns/ps/fs (FSDB scale "
+                      + fsdb_time_scale() + ")";
+                return false;
+            }
+        }
+        npiFsdbTime converted = 0;
+        if (!g_fsdb_file || !npi_fsdb_convert_time_in(g_fsdb_file, value, unit, converted)) {
+            error = std::string("Failed to convert time '") + source
+                  + "' for FSDB scale " + fsdb_time_scale();
+            return false;
+        }
+        out = converted;
+        return true;
+    };
+
+    if (spec.kind == TimeSpecKind::Absolute) {
+        return convert_abs(spec.absolute_text, out_time);
     }
 
-    npiFsdbTime converted = 0;
-    if (!g_fsdb_file || !npi_fsdb_convert_time_in(g_fsdb_file, value, unit, converted)) {
-        error = std::string("Failed to convert time '") + text
-              + "' for FSDB scale " + fsdb_time_scale();
+    std::string cursor_name = spec.cursor_name;
+    CursorManager cm;
+    if (spec.use_active_cursor && !cm.get_active_cursor(g_session_id, cursor_name)) {
+        error = "CURSOR_NOT_FOUND: active cursor is not set";
         return false;
     }
-    out_time = converted;
+    Cursor cursor;
+    if (!cm.get_cursor(g_session_id, cursor_name, cursor)) {
+        error = "CURSOR_NOT_FOUND: Cursor '" + cursor_name + "' does not exist";
+        return false;
+    }
+    uint64_t resolved = cursor.time;
+    if (spec.has_offset) {
+        if (spec.offset.cycle) {
+            error = "CLOCK_OFFSET_UNSUPPORTED: cycle offsets are not implemented in this build";
+            return false;
+        }
+        npiFsdbTime delta = 0;
+        if (!g_fsdb_file ||
+            !npi_fsdb_convert_time_in(g_fsdb_file,
+                                      std::fabs(spec.offset.value),
+                                      spec.offset.unit.c_str(),
+                                      delta)) {
+            error = "Failed to convert TimeSpec offset '" + spec.source + "'";
+            return false;
+        }
+        if (spec.offset.value < 0) {
+            if (resolved < delta) {
+                error = "TIME_OUT_OF_RANGE: resolved time is before waveform start";
+                return false;
+            }
+            resolved -= delta;
+        } else {
+            resolved += delta;
+        }
+    }
+    out_time = static_cast<npiFsdbTime>(resolved);
     return true;
 }
 
@@ -1108,10 +1155,10 @@ static bool sample_on_clock(const std::string& clock_path,
 }
 
 static Json ai_expr_eval_at(const Json& args, std::string& error) {
-    std::string time_s = args.value("time", std::string());
+    std::string time_s = args.value("at", args.value("time", std::string()));
     std::string expr = compact_expr_ws(args.value("expr", std::string()));
     if (time_s.empty() || expr.empty() || !args.contains("signals")) {
-        error = "expr.eval_at requires args.time, args.expr and args.signals";
+        error = "expr.eval_at requires args.time/args.at, args.expr and args.signals";
         return Json();
     }
     npiFsdbTime t = 0;
@@ -1762,6 +1809,120 @@ static Json ai_axi_channel_stall(const Json& args, std::string& error) {
     return data;
 }
 
+static Json cursor_to_json(const Cursor& c) {
+    Json j;
+    j["name"] = c.name;
+    j["time"] = c.time;
+    j["time_text"] = c.time_text.empty() ? format_time(c.time) : c.time_text;
+    j["note"] = c.note;
+    j["origin"] = c.origin;
+    j["clock"] = c.clock;
+    j["created_at"] = c.created_at;
+    j["updated_at"] = c.updated_at;
+    return j;
+}
+
+static Json resolved_time_json(const std::string& spec, npiFsdbTime time) {
+    Json j;
+    j["source"] = spec;
+    j["time"] = format_time(time);
+    j["time_value"] = time;
+    return j;
+}
+
+static Json ai_cursor_action(const std::string& action, const Json& args, std::string& error) {
+    CursorManager cm;
+    if (action == "cursor.set") {
+        std::string name = args.value("name", std::string());
+        std::string spec = args.value("time", args.value("at", std::string()));
+        if (name.empty() || spec.empty()) {
+            error = "cursor.set requires args.name and args.time";
+            return Json();
+        }
+        npiFsdbTime t = 0;
+        if (!parse_user_time(spec.c_str(), false, t, error)) return Json();
+        Cursor c;
+        c.name = name;
+        c.time = t;
+        c.time_text = format_time(t);
+        c.note = args.value("note", std::string());
+        c.origin = args.value("origin", std::string("manual"));
+        c.clock = args.value("clock", std::string());
+        if (!cm.set_cursor(g_session_id, c, args.value("active", true))) {
+            error = "failed to save cursor: " + name;
+            return Json();
+        }
+        Cursor saved;
+        cm.get_cursor(g_session_id, name, saved);
+        Json data;
+        data["cursor"] = cursor_to_json(saved);
+        data["resolved_time"] = resolved_time_json(spec, t);
+        data["status"] = "set";
+        return data;
+    }
+    if (action == "cursor.get") {
+        std::string name = args.value("name", std::string());
+        if (name.empty()) {
+            error = "cursor.get requires args.name";
+            return Json();
+        }
+        Cursor c;
+        if (!cm.get_cursor(g_session_id, name, c)) {
+            error = "CURSOR_NOT_FOUND: Cursor '" + name + "' does not exist";
+            return Json();
+        }
+        Json data;
+        data["cursor"] = cursor_to_json(c);
+        return data;
+    }
+    if (action == "cursor.list") {
+        Json arr = Json::array();
+        for (const auto& c : cm.list_cursors(g_session_id)) arr.push_back(cursor_to_json(c));
+        std::string active;
+        cm.get_active_cursor(g_session_id, active);
+        Json data;
+        data["cursors"] = arr;
+        data["active_cursor"] = active;
+        data["cursor_count"] = arr.size();
+        return data;
+    }
+    if (action == "cursor.delete") {
+        std::string name = args.value("name", std::string());
+        if (name.empty()) {
+            error = "cursor.delete requires args.name";
+            return Json();
+        }
+        if (!cm.delete_cursor(g_session_id, name)) {
+            error = "CURSOR_NOT_FOUND: Cursor '" + name + "' does not exist";
+            return Json();
+        }
+        Json data;
+        data["status"] = "deleted";
+        data["name"] = name;
+        return data;
+    }
+    if (action == "cursor.use") {
+        std::string name = args.value("name", std::string());
+        if (name.empty()) {
+            error = "cursor.use requires args.name";
+            return Json();
+        }
+        if (!cm.use_cursor(g_session_id, name)) {
+            error = "CURSOR_NOT_FOUND: Cursor '" + name + "' does not exist";
+            return Json();
+        }
+        Cursor c;
+        cm.get_cursor(g_session_id, name, c);
+        Json data;
+        data["status"] = "active";
+        data["active_cursor"] = name;
+        data["cursor"] = cursor_to_json(c);
+        return data;
+    }
+    error = "Unsupported cursor action: " + action;
+    return Json();
+}
+
 static Json ai_dispatch_query(const Json& req, std::string& error) {
     std::string action = req.value("action", std::string());
     Json args = req.value("args", Json::object());
@@ -1782,6 +1943,7 @@ static Json ai_dispatch_query(const Json& req, std::string& error) {
     if (action == "axi.latency_outlier") return ai_axi_latency_outlier(args, error);
     if (action == "axi.outstanding_timeline") return ai_axi_outstanding_timeline(args, error);
     if (action == "axi.channel_stall") return ai_axi_channel_stall(args, error);
+    if (action.compare(0, 7, "cursor.") == 0) return ai_cursor_action(action, args, error);
     error = "Unsupported AI action in server: " + action;
     return Json();
 }
@@ -2197,12 +2359,33 @@ static bool handle_client(int client_fd, bool& should_quit) {
     SessionRegistry registry;
     registry.touch(g_session_id, time(nullptr));
 
+    // Handle TIME_RESOLVE <time_spec> [allow_max]
+    if (strncmp(cmd, CMD_TIME_RESOLVE, strlen(CMD_TIME_RESOLVE)) == 0) {
+        char time_str[256] = {};
+        char allow_str[16] = {};
+        if (sscanf(cmd + strlen(CMD_TIME_RESOLVE), " %255s %15s", time_str, allow_str) >= 1) {
+            npiFsdbTime t = 0;
+            std::string error;
+            bool allow_max = strcmp(allow_str, "allow_max") == 0;
+            if (!parse_user_time(time_str, allow_max, t, error)) {
+                send_error(client_fd, error);
+                return true;
+            }
+            Json out = resolved_time_json(time_str, t);
+            std::string payload = json_response(out);
+            send_all(client_fd, payload.c_str(), payload.size());
+        } else {
+            send_error(client_fd, "Usage: TIME_RESOLVE <time_spec> [allow_max]");
+        }
+        return true;
+    }
+
     // Handle VALUE <signal> <time> <fmt>
     if (strncmp(cmd, CMD_VALUE, strlen(CMD_VALUE)) == 0) {
         char signal_path[1024];
-        char time_str[64];
+        char time_str[256];
         char fmt;
-        if (sscanf(cmd + strlen(CMD_VALUE), " %1023s %63s %c", signal_path, time_str, &fmt) == 3) {
+        if (sscanf(cmd + strlen(CMD_VALUE), " %1023s %255s %c", signal_path, time_str, &fmt) == 3) {
             npiFsdbTime t = 0;
             std::string error;
             if (!parse_user_time(time_str, false, t, error)) {
@@ -2220,9 +2403,9 @@ static bool handle_client(int client_fd, bool& should_quit) {
     // Handle LIST_VALUE <list_name> <time> <fmt> [json]
     if (strncmp(cmd, CMD_LIST_VALUE, strlen(CMD_LIST_VALUE)) == 0) {
         char list_name[256];
-        char time_str[64];
+        char time_str[256];
         char fmt[16];
-        if (sscanf(cmd + strlen(CMD_LIST_VALUE), " %255s %63s %15s", list_name, time_str, fmt) >= 3) {
+        if (sscanf(cmd + strlen(CMD_LIST_VALUE), " %255s %255s %15s", list_name, time_str, fmt) >= 3) {
             npiFsdbTime t = 0;
             std::string error;
             if (!parse_user_time(time_str, false, t, error)) {
@@ -2280,9 +2463,9 @@ static bool handle_client(int client_fd, bool& should_quit) {
     // Handle LIST_DIFF <list_name> <begin_time> <end_time>
     if (strncmp(cmd, CMD_LIST_DIFF, strlen(CMD_LIST_DIFF)) == 0) {
         char list_name[256];
-        char begin_str[64];
-        char end_str[64];
-        if (sscanf(cmd + strlen(CMD_LIST_DIFF), " %255s %63s %63s", list_name, begin_str, end_str) == 3) {
+        char begin_str[256];
+        char end_str[256];
+        if (sscanf(cmd + strlen(CMD_LIST_DIFF), " %255s %255s %255s", list_name, begin_str, end_str) == 3) {
             npiFsdbTime begin = 0;
             npiFsdbTime end = 0;
             std::string error;
@@ -2480,15 +2663,15 @@ static bool handle_client(int client_fd, bool& should_quit) {
         bool find = strncmp(cmd, CMD_EVENT_FIND_CTX, strlen(CMD_EVENT_FIND_CTX)) == 0;
         size_t base_len = find ? strlen(CMD_EVENT_FIND_CTX) : strlen(CMD_EVENT_EXPORT_CTX);
         char name[256] = {};
-        char begin_str[64] = {};
-        char end_str[64] = {};
-        char context_str[64] = {};
+        char begin_str[256] = {};
+        char end_str[256] = {};
+        char context_str[256] = {};
         int limit = -1;
         char mode[16] = {};
         char axi_name[256] = {};
         char apb_name[256] = {};
         const char* p = cmd + base_len;
-        int matched = sscanf(p, " %255s %63s %63s %d %15s %63s %255s %255s",
+        int matched = sscanf(p, " %255s %255s %255s %d %15s %255s %255s %255s",
                              name, begin_str, end_str, &limit, mode, context_str, axi_name, apb_name);
         const char* expr_p = strstr(p, " expr ");
         if (matched >= 8 && expr_p) {
@@ -2529,12 +2712,12 @@ static bool handle_client(int client_fd, bool& should_quit) {
         bool find = strncmp(cmd, CMD_EVENT_FIND, strlen(CMD_EVENT_FIND)) == 0;
         size_t base_len = find ? strlen(CMD_EVENT_FIND) : strlen(CMD_EVENT_EXPORT);
         char name[256] = {};
-        char begin_str[64] = {};
-        char end_str[64] = {};
+        char begin_str[256] = {};
+        char end_str[256] = {};
         int limit = -1;
         char mode[16] = {};
         const char* p = cmd + base_len;
-        int matched = sscanf(p, " %255s %63s %63s %d %15s", name, begin_str, end_str, &limit, mode);
+        int matched = sscanf(p, " %255s %255s %255s %d %15s", name, begin_str, end_str, &limit, mode);
         const char* expr_p = strstr(p, " expr ");
         if (matched >= 5 && expr_p) {
             expr_p += strlen(" expr ");

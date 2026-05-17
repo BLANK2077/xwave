@@ -78,9 +78,20 @@ export XWAVE_IDLE_TIMEOUT_SEC=28800
 
 idle timeout 后 daemon 会退出并释放 FSDB/NPI 句柄。重新执行 `open <fsdb>` 会创建新的 Session；如果没有成功，请使用 `--debug` 查看具体失败阶段。
 
-### 时间参数
+### TimeSpec 与游标
 
-时间字符串支持 `us`、`ns`、`ps`、`fs`。如果不写单位，默认按 `ns` 处理。
+所有需要时间的命令都接受 `TimeSpec`。TimeSpec 可以是绝对时间、已保存游标，或游标加减时间偏移：
+
+```text
+100ns
+@deadlock
+@deadlock-20ns
+@deadlock+5ns
+@-10ns
+@+5ns
+```
+
+绝对时间支持 `us`、`ns`、`ps`、`fs`。如果不写单位，默认按 `ns` 处理。`@` 表示当前 active cursor。`@deadlock-10cycle(top.clk)` 这类 cycle offset 语法已预留，当前版本会返回 `CLOCK_OFFSET_UNSUPPORTED`。
 
 时间转换发生在 daemon 侧。daemon 打开 FSDB 后，会基于当前 FSDB 的 time scale 调用 NPI 时间转换 API，因此不要假设 FSDB 内部时间单位总是 `ps`。
 
@@ -88,6 +99,8 @@ idle timeout 后 daemon 会退出并释放 FSDB/NPI 句柄。重新执行 `open 
 
 ```bash
 tools/xwave-env value top.clk 10ns
+tools/xwave-env cursor set deadlock 120340ns -note rready_stall_start
+tools/xwave-env value top.rready --at @deadlock-20ns
 tools/xwave-env list diff -l if0 -b 5ns -e 50ns
 tools/xwave-env event find -n if0 -expr "valid && ready" -b 100us
 ```
@@ -254,7 +267,7 @@ tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"session.
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], d.get("summary", {}))'
 ```
 
-当前 AI action 覆盖 `session/scope/value/list/apb/axi/event`，以及 condition、expression、window、signal inspection、anomaly detection、handshake 和协议调试事实。
+当前 AI action 覆盖 `session/cursor/scope/value/list/apb/axi/event`，以及 condition、expression、window、signal inspection、anomaly detection、handshake 和协议调试事实。
 
 ## Session 排障
 
@@ -292,13 +305,14 @@ debug 输出写入 stderr。server 启动细节写入：
 | `xwave session doctor -s <sid> [-json] [--debug]` | 诊断 Session |
 | `xwave session gc [--debug]` | 清理 stale/idle Session |
 | `xwave session kill <id\|all> [--debug]` | 关闭一个或所有 Session |
+| `xwave cursor set|get|list|delete|use ...` | 管理 Session 时间游标 |
 | `xwave scope <path> [-recursive] [-json] [-s <sid>]` | 列出 scope 下信号 |
-| `xwave value <sig> <time> [-b\|-d] [-s <sid>]` | 查询单个信号值 |
+| `xwave value <sig> <time_spec>\|--at <time_spec> [-b\|-d] [-s <sid>]` | 查询单个信号值 |
 | `xwave list new <name> [-s <sid>]` | 创建信号列表 |
 | `xwave list add <sig> [-s <sid>] [-l <name>]` | 添加信号 |
 | `xwave list del <sig\|idx> [-s <sid>] [-l <name>]` | 按路径或序号删除 |
 | `xwave list show [-s <sid>] [-l <name>]` | 显示列表内容 |
-| `xwave list value <time> [-l <name>] [-b\|-d] [-json] [-s <sid>]` | 批量查询列表值 |
+| `xwave list value <time_spec>\|--at <time_spec> [-l <name>] [-b\|-d] [-json] [-s <sid>]` | 批量查询列表值 |
 | `xwave list validate [-l <name>] [-json] [-s <sid>]` | 校验列表信号 |
 | `xwave list diff [-l <name>] [-b T] [-e T] [-s <sid>]` | 查找最早差异时间 |
 | `xwave apb <json> -n <name> [-s <sid>]` | 加载 APB 配置 |
@@ -378,6 +392,7 @@ make clean && make
 - `~/.xwave/sessions/<sid>/apb.json`：APB 配置
 - `~/.xwave/sessions/<sid>/axi.json`：AXI 配置
 - `~/.xwave/sessions/<sid>/events.json`：event 配置
+- `~/.xwave/sessions/<sid>/cursors.json`：Session 时间游标
 
 旧版顶层维护文件（例如 `~/.xwave.registry`、`~/.xwave.lists`）在新 JSON 文件不存在且存在匹配的旧 registry 记录时会被只读迁移。新版本只写入 `~/.xwave/` 目录。
 

@@ -23,12 +23,13 @@ void print_help(const char* prog) {
     printf("  %s session kill <id|all> [--debug]  Kill a specific session or all\n", prog);
     printf("  %s session gc [--debug]     Clean stale and idle sessions\n", prog);
     printf("  %s session doctor -s <sid> [-json] [--debug]  Diagnose a session\n", prog);
-    printf("  %s value <sig> <time> [-b|-d] [-s <sid>]  Query signal value\n", prog);
+    printf("  %s value <sig> <time_spec>|--at <time_spec> [-b|-d] [-s <sid>]  Query signal value\n", prog);
+    printf("  %s cursor set|get|list|delete|use ...      Manage session time cursors\n", prog);
     printf("  %s list new <name> [-s <sid>]             Create a signal list\n", prog);
     printf("  %s list add <sig> [-s <sid>] [-l <name>]  Add signal to list\n", prog);
     printf("  %s list del <sig|idx> [-s <sid>] [-l <name>]  Delete from list\n", prog);
     printf("  %s list show [-s <sid>] [-l <name>]       Show list contents\n", prog);
-    printf("  %s list value <time> [-l <name>] [-b|-d] [-json] [-s <sid>]\n", prog);
+    printf("  %s list value <time_spec>|--at <time_spec> [-l <name>] [-b|-d] [-json] [-s <sid>]\n", prog);
     printf("  %s list diff [-l <name>] [-b T] [-e T] [-s <sid>]\n", prog);
     printf("  %s list validate [-l <name>] [-json] [-s <sid>]\n", prog);
     printf("  %s scope <path> [-recursive] [-json] [-s <sid>]\n", prog);
@@ -56,8 +57,9 @@ void print_help(const char* prog) {
     printf("  %s session list\n", prog);
     printf("  %s session kill 1\n", prog);
     printf("\nDetailed help topics:\n");
-    printf("  %s help open|session|value|list|scope|apb|axi|event|ai\n", prog);
-    printf("\nTime arguments accept us/ns/ps/fs suffixes. Default unit is ns.\n");
+    printf("  %s help open|session|value|cursor|list|scope|apb|axi|event|ai\n", prog);
+    printf("\nTimeSpec accepts absolute time, cursor, or cursor offset: 100ns, @fail, @fail-20ns, @+5ns.\n");
+    printf("Cycle offsets such as @fail-10cycle(top.clk) are reserved but not implemented yet.\n");
 }
 
 static void print_open_help(const char* prog) {
@@ -101,15 +103,32 @@ static void print_session_help(const char* prog) {
 
 static void print_value_help(const char* prog) {
     printf("Usage:\n");
-    printf("  %s value <signal> <time> [-b|-d] [-s <sid>]\n\n", prog);
+    printf("  %s value <signal> <time_spec> [-b|-d] [-s <sid>]\n", prog);
+    printf("  %s value <signal> --at <time_spec> [-b|-d] [-s <sid>]\n\n", prog);
     printf("Arguments:\n");
     printf("  <signal>          Full FSDB signal path.\n");
-    printf("  <time>            Query time. Supports us/ns/ps/fs suffixes; default is ns.\n\n");
+    printf("  <time_spec>       Absolute time or cursor expression: 100ns, @fail, @fail-20ns, @+5ns.\n\n");
     printf("Options:\n");
     printf("  -b                Print binary value.\n");
     printf("  -d                Print decimal value.\n");
     printf("  -s <sid>          Use this session. If omitted, the latest session is used.\n\n");
     printf("Default output radix is hexadecimal.\n");
+}
+
+static void print_cursor_help(const char* prog) {
+    printf("Usage:\n");
+    printf("  %s cursor set <name> <time_spec> [-note <text>] [-s <sid>]\n", prog);
+    printf("  %s cursor get <name> [-json] [-s <sid>]\n", prog);
+    printf("  %s cursor list [-json] [-s <sid>]\n", prog);
+    printf("  %s cursor delete <name> [-s <sid>]\n", prog);
+    printf("  %s cursor use <name> [-s <sid>]\n\n", prog);
+    printf("TimeSpec:\n");
+    printf("  100ns             Absolute time; us/ns/ps/fs supported, default unit is ns.\n");
+    printf("  @fail             Cursor time.\n");
+    printf("  @fail-20ns        Cursor minus duration.\n");
+    printf("  @+5ns             Active cursor plus duration.\n");
+    printf("  @fail-10cycle(clk) is reserved and returns CLOCK_OFFSET_UNSUPPORTED in this build.\n\n");
+    printf("Cursors are stored per session under ~/.xwave/sessions/<sid>/cursors.json.\n");
 }
 
 static void print_list_help(const char* prog) {
@@ -118,7 +137,7 @@ static void print_list_help(const char* prog) {
     printf("  %s list add <sig> [-s <sid>] [-l <name>]\n", prog);
     printf("  %s list del <sig|idx> [-s <sid>] [-l <name>]\n", prog);
     printf("  %s list show [-s <sid>] [-l <name>]\n", prog);
-    printf("  %s list value <time> [-l <name>] [-b|-d] [-json] [-s <sid>]\n", prog);
+    printf("  %s list value <time_spec>|--at <time_spec> [-l <name>] [-b|-d] [-json] [-s <sid>]\n", prog);
     printf("  %s list validate [-l <name>] [-json] [-s <sid>]\n", prog);
     printf("  %s list diff [-l <name>] [-b T] [-e T] [-s <sid>]\n\n", prog);
     printf("Subcommands:\n");
@@ -126,7 +145,7 @@ static void print_list_help(const char* prog) {
     printf("  add <sig>         Add a signal after checking it exists in the current FSDB.\n");
     printf("  del <sig|idx>     Delete by signal path or 1-based index from list show.\n");
     printf("  show              Print list contents with 1-based indices.\n");
-    printf("  value <time>      Query all list signals at one time.\n");
+    printf("  value <time_spec> Query all list signals at one time.\n");
     printf("  validate          Check whether every list signal still exists in the FSDB.\n");
     printf("  diff              Find the earliest time where at least two list signals differ.\n\n");
     printf("Options:\n");
@@ -135,8 +154,8 @@ static void print_list_help(const char* prog) {
     printf("  -b                Binary output for list value.\n");
     printf("  -d                Decimal output for list value.\n");
     printf("  -json             JSON output for value or validate.\n");
-    printf("  -b T              Begin time for diff. Default is 0.\n");
-    printf("  -e T              End time for diff. Default is waveform end.\n\n");
+    printf("  -b T              Begin TimeSpec for diff. Default is 0.\n");
+    printf("  -e T              End TimeSpec for diff. Default is waveform end.\n\n");
     printf("Notes:\n");
     printf("  list value prints NOT_FOUND and exits non-zero if an old list contains a missing signal.\n");
     printf("  list diff requires at least two signals.\n");
@@ -281,6 +300,7 @@ void print_help_topic(const char* prog, const char* topic) {
     if (strcmp(topic, "open") == 0) print_open_help(prog);
     else if (strcmp(topic, "session") == 0) print_session_help(prog);
     else if (strcmp(topic, "value") == 0) print_value_help(prog);
+    else if (strcmp(topic, "cursor") == 0) print_cursor_help(prog);
     else if (strcmp(topic, "list") == 0) print_list_help(prog);
     else if (strcmp(topic, "scope") == 0) print_scope_help(prog);
     else if (strcmp(topic, "apb") == 0) print_apb_help(prog);

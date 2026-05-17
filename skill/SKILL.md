@@ -21,6 +21,8 @@ Use one of these forms:
 tools/xwave-env ai query request.json
 tools/xwave-env ai query -
 tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"value.at","target":{"fsdb":"waves.fsdb","auto_open":true},"args":{"signal":"top.clk","time":"10ns"}}'
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"cursor.set","target":{"session_id":1},"args":{"name":"deadlock","time":"120340ns","note":"stall start"}}'
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"value.at","target":{"session_id":1},"args":{"signal":"top.ready","at":"@deadlock-20ns","format":"hex"}}'
 tools/xwave-env ai schema
 tools/xwave-env ai actions
 ```
@@ -73,11 +75,13 @@ AI usage rules:
 - For one-shot queries, use `target.fsdb + auto_open:true`.
 - Always inspect `ok` and `error.code`; do not parse human text.
 - Prefer `python3 -c 'import json,sys; ...'` pipelines for extracting fields or computing statistics from `xwave ai query` output.
+- Use `cursor.set` after finding an important event time, then use `@name`, `@name-20ns`, `@name+5ns`, or active cursor forms such as `@-10ns` in later time fields.
+- Time fields accept absolute TimeSpec strings directly; cycle offsets like `@fail-10cycle(top.clk)` are reserved but currently return `CLOCK_OFFSET_UNSUPPORTED`.
 - Treat `known:false`, `status:"unknown"`, and `pass:null` as inconclusive waveform facts, not failures.
 - Use `scope.list` after `SIGNAL_NOT_FOUND`.
 - Use `limits.max_rows/max_events/max_samples` for broad scans.
 - Load APB/AXI/Event configs before protocol or event actions.
-- Runtime state and persisted configs live under `~/.xwave/`: `registry.json` plus `sessions/<sid>/session.json`, `socket`, `debug.log`, `lists.json`, `apb.json`, `axi.json`, and `events.json`. Older top-level files such as `~/.xwave.registry` are legacy migration inputs only.
+- Runtime state and persisted configs live under `~/.xwave/`: `registry.json` plus `sessions/<sid>/session.json`, `socket`, `debug.log`, `lists.json`, `apb.json`, `axi.json`, `events.json`, and `cursors.json`. Older top-level files such as `~/.xwave.registry` are legacy migration inputs only.
 
 ## Session Actions
 
@@ -121,6 +125,50 @@ Stop one session or all sessions.
 {"api_version":"xwave.ai.v1","action":"session.kill","args":{"id":"all"}}
 ```
 
+## Cursor Actions
+
+Cursor actions store named session-local times. Use them when a debug flow has a key event time and later queries need context before or after that point. All later time fields can use `@name`, `@name-20ns`, `@name+5ns`, `@-10ns`, or `@+5ns`.
+
+### `cursor.set`
+
+Create or replace a cursor. The response includes `data.resolved_time`, so use that as the canonical time for evidence.
+
+```json
+{"api_version":"xwave.ai.v1","action":"cursor.set","target":{"session_id":1},"args":{"name":"deadlock","time":"120340ns","note":"rready stall starts"}}
+```
+
+### `cursor.get`
+
+Fetch one cursor.
+
+```json
+{"api_version":"xwave.ai.v1","action":"cursor.get","target":{"session_id":1},"args":{"name":"deadlock"}}
+```
+
+### `cursor.list`
+
+List cursors and the active cursor.
+
+```json
+{"api_version":"xwave.ai.v1","action":"cursor.list","target":{"session_id":1}}
+```
+
+### `cursor.use`
+
+Set the active cursor, enabling short forms such as `@-20ns`.
+
+```json
+{"api_version":"xwave.ai.v1","action":"cursor.use","target":{"session_id":1},"args":{"name":"deadlock"}}
+```
+
+### `cursor.delete`
+
+Delete a cursor.
+
+```json
+{"api_version":"xwave.ai.v1","action":"cursor.delete","target":{"session_id":1},"args":{"name":"deadlock"}}
+```
+
 ## Scope And Value Actions
 
 ### `scope.list`
@@ -136,7 +184,7 @@ List available FSDB signals under a scope. Use this to recover from missing or a
 Read one signal at one time. Use for point evidence.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"value.at","target":{"session_id":1},"args":{"signal":"top.u_dut.ready","time":"42us","format":"hex"}}
+{"api_version":"xwave.ai.v1","action":"value.at","target":{"session_id":1},"args":{"signal":"top.u_dut.ready","at":"@deadlock-20ns","format":"hex"}}
 ```
 
 ### `value.batch_at`
@@ -144,7 +192,7 @@ Read one signal at one time. Use for point evidence.
 Read many signals at the same time. Prefer this over many `value.at` calls.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"value.batch_at","target":{"session_id":1},"args":{"time":"42us","signals":["top.u_dut.valid","top.u_dut.ready","top.u_dut.fifo_full"],"format":"hex"}}
+{"api_version":"xwave.ai.v1","action":"value.batch_at","target":{"session_id":1},"args":{"at":"@deadlock","signals":["top.u_dut.valid","top.u_dut.ready","top.u_dut.fifo_full"],"format":"hex"}}
 ```
 
 ## Signal List Actions

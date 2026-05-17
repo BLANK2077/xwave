@@ -6,6 +6,7 @@
 #include "commands/cmd_axi.h"
 #include "commands/cmd_event.h"
 #include "commands/cmd_ai.h"
+#include "commands/cmd_cursor.h"
 #include "server/server.h"
 #include <cstring>
 #include <cstdio>
@@ -101,6 +102,10 @@ int main(int argc, char** argv) {
 
     if (strcmp(cmd, "scope") == 0) {
         return cmd_scope(argc, argv);
+    }
+
+    if (strcmp(cmd, "cursor") == 0) {
+        return cmd_cursor(argc, argv);
     }
 
     // APB commands

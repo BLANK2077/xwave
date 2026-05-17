@@ -16,6 +16,7 @@ std::string xwave_lists_path(int session_id);
 std::string xwave_apb_path(int session_id);
 std::string xwave_axi_path(int session_id);
 std::string xwave_events_path(int session_id);
+std::string xwave_cursors_path(int session_id);
 
 std::string xwave_legacy_registry_path();
 std::string xwave_legacy_lists_path();

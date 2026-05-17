@@ -197,10 +197,11 @@ int cmd_list(int argc, char** argv) {
         return 0;
     }
 
-    // --- list value <time> [-l <name>] [-b|-d] [-json] [-s <sid>] ---
+    // --- list value <time_spec> [-l <name>] [-b|-d] [-json] [-s <sid>] ---
     if (strcmp(subcmd, "value") == 0) {
         if (argc < 4) {
-            fprintf(stderr, "Usage: %s list value <time> [-l <name>] [-b|-d] [-json] [-s <sid>]\n\n", argv[0]);
+            fprintf(stderr, "Usage: %s list value <time_spec> [-l <name>] [-b|-d] [-json] [-s <sid>]\n", argv[0]);
+            fprintf(stderr, "       %s list value --at <time_spec> [-l <name>] [-b|-d] [-json] [-s <sid>]\n\n", argv[0]);
             print_help(argv[0]);
             return 1;
         }
@@ -209,7 +210,12 @@ int cmd_list(int argc, char** argv) {
         const char* list_name = nullptr;
         char fmt = 'H';
         bool json = false;
-        for (int i = 4; i < argc; ++i) {
+        int start = 4;
+        if (strcmp(argv[3], "--at") == 0 && argc >= 5) {
+            time_str = argv[4];
+            start = 5;
+        }
+        for (int i = start; i < argc; ++i) {
             if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
             else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc) list_name = argv[++i];
             else if (strcmp(argv[i], "-b") == 0) fmt = 'B';

@@ -111,7 +111,10 @@ bool EventManager::load_session(int session_id, std::vector<EventConfig>& config
     configs.clear();
     fsdb_files.clear();
     int fd = open(xwave_events_path(session_id).c_str(), O_RDONLY);
-    if (fd < 0) return migrate_legacy(session_id, configs, fsdb_files);
+    if (fd < 0) {
+        migrate_legacy(session_id, configs, fsdb_files);
+        return true;
+    }
     if (!lock_file(fd)) {
         close(fd);
         return false;

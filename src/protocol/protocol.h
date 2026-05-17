@@ -42,6 +42,7 @@
 #define CMD_EVENT_FIND_CTX  "EVENT_FIND_CTX"
 #define CMD_EVENT_EXPORT_CTX "EVENT_EXPORT_CTX"
 #define CMD_AI_QUERY        "AI_QUERY"
+#define CMD_TIME_RESOLVE    "TIME_RESOLVE"
 
 // End-of-response marker (server -> client)
 #define END_MARKER          "##END##\n"

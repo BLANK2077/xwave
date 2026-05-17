@@ -78,9 +78,20 @@ export XWAVE_IDLE_TIMEOUT_SEC=28800
 
 After an idle timeout, the daemon exits and releases the FSDB/NPI handle. Running `open <fsdb>` again creates a fresh session. If it does not, use `--debug` to see the exact failed stage.
 
-### Time Arguments
+### TimeSpec And Cursors
 
-Time strings accept `us`, `ns`, `ps`, and `fs`. If no suffix is provided, the default is `ns`.
+Commands that need a time accept a `TimeSpec`. A TimeSpec can be an absolute time, a saved cursor, or a cursor plus/minus a duration:
+
+```text
+100ns
+@deadlock
+@deadlock-20ns
+@deadlock+5ns
+@-10ns
+@+5ns
+```
+
+Absolute times accept `us`, `ns`, `ps`, and `fs`. If no suffix is provided, the default is `ns`. `@` means the active cursor. Cycle offsets such as `@deadlock-10cycle(top.clk)` are reserved for a later version and currently return `CLOCK_OFFSET_UNSUPPORTED`.
 
 Time conversion happens inside the daemon after the FSDB is opened. The daemon uses the NPI time conversion API for the current FSDB time scale, so do not assume the internal FSDB unit is always `ps`.
 
@@ -88,6 +99,8 @@ Examples:
 
 ```bash
 tools/xwave-env value top.clk 10ns
+tools/xwave-env cursor set deadlock 120340ns -note rready_stall_start
+tools/xwave-env value top.rready --at @deadlock-20ns
 tools/xwave-env list diff -l if0 -b 5ns -e 50ns
 tools/xwave-env event find -n if0 -expr "valid && ready" -b 100us
 ```
@@ -254,7 +267,7 @@ tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"session.
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], d.get("summary", {}))'
 ```
 
-Current AI actions cover `session/scope/value/list/apb/axi/event`, condition and expression checks, window verification, signal inspection, anomaly detection, handshake inspection, and protocol debug facts.
+Current AI actions cover `session/cursor/scope/value/list/apb/axi/event`, condition and expression checks, window verification, signal inspection, anomaly detection, handshake inspection, and protocol debug facts.
 
 ## Session Debugging
 
@@ -292,13 +305,14 @@ Common causes of `Failed to create session`:
 | `xwave session doctor -s <sid> [-json] [--debug]` | Diagnose a session |
 | `xwave session gc [--debug]` | Clean stale/idle sessions |
 | `xwave session kill <id\|all> [--debug]` | Kill one or all sessions |
+| `xwave cursor set|get|list|delete|use ...` | Manage session time cursors |
 | `xwave scope <path> [-recursive] [-json] [-s <sid>]` | List signals under a scope |
-| `xwave value <sig> <time> [-b\|-d] [-s <sid>]` | Query one signal value |
+| `xwave value <sig> <time_spec>\|--at <time_spec> [-b\|-d] [-s <sid>]` | Query one signal value |
 | `xwave list new <name> [-s <sid>]` | Create a signal list |
 | `xwave list add <sig> [-s <sid>] [-l <name>]` | Add a signal |
 | `xwave list del <sig\|idx> [-s <sid>] [-l <name>]` | Delete by signal path or index |
 | `xwave list show [-s <sid>] [-l <name>]` | Show list contents |
-| `xwave list value <time> [-l <name>] [-b\|-d] [-json] [-s <sid>]` | Batch-query list values |
+| `xwave list value <time_spec>\|--at <time_spec> [-l <name>] [-b\|-d] [-json] [-s <sid>]` | Batch-query list values |
 | `xwave list validate [-l <name>] [-json] [-s <sid>]` | Validate list signals |
 | `xwave list diff [-l <name>] [-b T] [-e T] [-s <sid>]` | Find the earliest difference time |
 | `xwave apb <json> -n <name> [-s <sid>]` | Load an APB config |
@@ -378,6 +392,7 @@ Persistent files:
 - `~/.xwave/sessions/<sid>/apb.json`: APB configs
 - `~/.xwave/sessions/<sid>/axi.json`: AXI configs
 - `~/.xwave/sessions/<sid>/events.json`: event configs
+- `~/.xwave/sessions/<sid>/cursors.json`: session time cursors
 
 Older top-level maintenance files such as `~/.xwave.registry` and `~/.xwave.lists` are read for one-time migration when the new JSON files are missing and a matching legacy registry record exists. New writes go only to `~/.xwave/`.
 

@@ -78,6 +78,10 @@ std::string xwave_events_path(int session_id) {
     return xwave_session_dir(session_id) + "/events.json";
 }
 
+std::string xwave_cursors_path(int session_id) {
+    return xwave_session_dir(session_id) + "/cursors.json";
+}
+
 std::string xwave_legacy_registry_path() {
     return home_dir() + "/.xwave.registry";
 }
@@ -115,6 +119,7 @@ bool xwave_remove_session_dir(int session_id) {
     remove_file_if_exists(dir + "/apb.json");
     remove_file_if_exists(dir + "/axi.json");
     remove_file_if_exists(dir + "/events.json");
+    remove_file_if_exists(dir + "/cursors.json");
     if (rmdir(dir.c_str()) == 0) return true;
     return access(dir.c_str(), F_OK) != 0;
 }
