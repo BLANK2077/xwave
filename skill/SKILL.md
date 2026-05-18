@@ -21,8 +21,8 @@ Use one of these forms:
 tools/xwave-env ai query request.json
 tools/xwave-env ai query -
 tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"value.at","target":{"fsdb":"waves.fsdb","auto_open":true},"args":{"signal":"top.clk","time":"10ns"}}'
-tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"cursor.set","target":{"session_id":1},"args":{"name":"deadlock","time":"120340ns","note":"stall start"}}'
-tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"value.at","target":{"session_id":1},"args":{"signal":"top.ready","at":"@deadlock-20ns","format":"hex"}}'
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"cursor.set","target":{"session_id":"case_a"},"args":{"name":"deadlock","time":"120340ns","note":"stall start"}}'
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"value.at","target":{"session_id":"case_a"},"args":{"signal":"top.ready","at":"@deadlock-20ns","format":"hex"}}'
 tools/xwave-env ai schema
 tools/xwave-env ai actions
 ```
@@ -37,7 +37,7 @@ tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"session.
 For larger summaries, keep the xwave query bounded and do the aggregation in Python:
 
 ```bash
-tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":1},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"0ns","end":"100us"}},"limits":{"max_rows":1000}}' \
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":"case_a"},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"0ns","end":"100us"}},"limits":{"max_rows":1000}}' \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); rows=d.get("data",{}).get("events",[]); print(len(rows))'
 ```
 
@@ -71,7 +71,7 @@ ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/me
 Only the top-level response envelope is stable across all actions. Field names inside `summary`, `data`, and `findings` are action-specific and may differ by action. Do not guess detailed keys such as latency subfields from memory. For a field dictionary and extraction guidance, see [references/ai-response-dictionary.md](references/ai-response-dictionary.md). For exact fields on a specific build and FSDB, run `tools/xwave-env ai schema` when available, or issue a small bounded query and inspect the returned JSON before writing extraction code.
 
 AI usage rules:
-- Start with `session.open` for repeated work, then use `target.session_id`.
+- Start with `session.open` for repeated work, then use `target.session_id` as a string.
 - For one-shot queries, use `target.fsdb + auto_open:true`.
 - Always inspect `ok` and `error.code`; do not parse human text.
 - Prefer `python3 -c 'import json,sys; ...'` pipelines for extracting fields or computing statistics from `xwave ai query` output.
@@ -81,16 +81,16 @@ AI usage rules:
 - Use `scope.list` after `SIGNAL_NOT_FOUND`.
 - Use `limits.max_rows/max_events/max_samples` for broad scans.
 - Load APB/AXI/Event configs before protocol or event actions.
-- Runtime state and persisted configs live under `~/.xwave/`: `registry.json` plus `sessions/<sid>/session.json`, `socket`, `debug.log`, `lists.json`, `apb.json`, `axi.json`, `events.json`, and `cursors.json`. Older top-level files such as `~/.xwave.registry` are legacy migration inputs only.
+- Runtime state and persisted configs live under `~/.xwave/`: `registry.json` plus `sessions/<hashed-session-dir>/session.json`, `socket`, `debug.log`, `lists.json`, `apb.json`, `axi.json`, `events.json`, and `cursors.json`.
 
 ## Session Actions
 
 ### `session.open`
 
-Open or reuse a session for an FSDB. Use this once at the start of a multi-step debug.
+Open a named session for an FSDB. The session name is required, is the real session id, and is reused by every later `target.session_id` field. Names may be up to 256 characters and may contain letters, digits, `_`, `.`, and `-`; duplicate names fail.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"session.open","target":{"fsdb":"/path/to/waves.fsdb"}}
+{"api_version":"xwave.ai.v1","action":"session.open","target":{"fsdb":"/path/to/waves.fsdb"},"args":{"name":"case_a"}}
 ```
 
 ### `session.list`
@@ -106,7 +106,7 @@ List known sessions. Use before reusing an existing session.
 Check daemon, socket, PID, FSDB fingerprint, and health for a session.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"session.doctor","target":{"session_id":1}}
+{"api_version":"xwave.ai.v1","action":"session.doctor","target":{"session_id":"case_a"}}
 ```
 
 ### `session.gc`
@@ -134,7 +134,7 @@ Cursor actions store named session-local times. Use them when a debug flow has a
 Create or replace a cursor. The response includes `data.resolved_time`, so use that as the canonical time for evidence.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"cursor.set","target":{"session_id":1},"args":{"name":"deadlock","time":"120340ns","note":"rready stall starts"}}
+{"api_version":"xwave.ai.v1","action":"cursor.set","target":{"session_id":"case_a"},"args":{"name":"deadlock","time":"120340ns","note":"rready stall starts"}}
 ```
 
 ### `cursor.get`
@@ -142,7 +142,7 @@ Create or replace a cursor. The response includes `data.resolved_time`, so use t
 Fetch one cursor.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"cursor.get","target":{"session_id":1},"args":{"name":"deadlock"}}
+{"api_version":"xwave.ai.v1","action":"cursor.get","target":{"session_id":"case_a"},"args":{"name":"deadlock"}}
 ```
 
 ### `cursor.list`
@@ -150,7 +150,7 @@ Fetch one cursor.
 List cursors and the active cursor.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"cursor.list","target":{"session_id":1}}
+{"api_version":"xwave.ai.v1","action":"cursor.list","target":{"session_id":"case_a"}}
 ```
 
 ### `cursor.use`
@@ -158,7 +158,7 @@ List cursors and the active cursor.
 Set the active cursor, enabling short forms such as `@-20ns`.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"cursor.use","target":{"session_id":1},"args":{"name":"deadlock"}}
+{"api_version":"xwave.ai.v1","action":"cursor.use","target":{"session_id":"case_a"},"args":{"name":"deadlock"}}
 ```
 
 ### `cursor.delete`
@@ -166,7 +166,7 @@ Set the active cursor, enabling short forms such as `@-20ns`.
 Delete a cursor.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"cursor.delete","target":{"session_id":1},"args":{"name":"deadlock"}}
+{"api_version":"xwave.ai.v1","action":"cursor.delete","target":{"session_id":"case_a"},"args":{"name":"deadlock"}}
 ```
 
 ## Scope And Value Actions
@@ -176,7 +176,7 @@ Delete a cursor.
 List available FSDB signals under a scope. Use this to recover from missing or ambiguous paths.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"scope.list","target":{"session_id":1},"args":{"path":"top.u_dut","recursive":true},"limits":{"max_rows":200}}
+{"api_version":"xwave.ai.v1","action":"scope.list","target":{"session_id":"case_a"},"args":{"path":"top.u_dut","recursive":true},"limits":{"max_rows":200}}
 ```
 
 ### `value.at`
@@ -184,7 +184,7 @@ List available FSDB signals under a scope. Use this to recover from missing or a
 Read one signal at one time. Use for point evidence.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"value.at","target":{"session_id":1},"args":{"signal":"top.u_dut.ready","at":"@deadlock-20ns","format":"hex"}}
+{"api_version":"xwave.ai.v1","action":"value.at","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.ready","at":"@deadlock-20ns","format":"hex"}}
 ```
 
 ### `value.batch_at`
@@ -192,7 +192,7 @@ Read one signal at one time. Use for point evidence.
 Read many signals at the same time. Prefer this over many `value.at` calls.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"value.batch_at","target":{"session_id":1},"args":{"at":"@deadlock","signals":["top.u_dut.valid","top.u_dut.ready","top.u_dut.fifo_full"],"format":"hex"}}
+{"api_version":"xwave.ai.v1","action":"value.batch_at","target":{"session_id":"case_a"},"args":{"at":"@deadlock","signals":["top.u_dut.valid","top.u_dut.ready","top.u_dut.fifo_full"],"format":"hex"}}
 ```
 
 ## Signal List Actions
@@ -202,7 +202,7 @@ Read many signals at the same time. Prefer this over many `value.at` calls.
 Create a named signal list.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"list.create","target":{"session_id":1},"args":{"name":"if0"}}
+{"api_version":"xwave.ai.v1","action":"list.create","target":{"session_id":"case_a"},"args":{"name":"if0"}}
 ```
 
 ### `list.add`
@@ -210,7 +210,7 @@ Create a named signal list.
 Add a signal after probing that it exists.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"list.add","target":{"session_id":1},"args":{"name":"if0","signal":"top.u_dut.valid"}}
+{"api_version":"xwave.ai.v1","action":"list.add","target":{"session_id":"case_a"},"args":{"name":"if0","signal":"top.u_dut.valid"}}
 ```
 
 ### `list.delete`
@@ -218,7 +218,7 @@ Add a signal after probing that it exists.
 Remove by signal path or list index.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"list.delete","target":{"session_id":1},"args":{"name":"if0","index":"2"}}
+{"api_version":"xwave.ai.v1","action":"list.delete","target":{"session_id":"case_a"},"args":{"name":"if0","index":"2"}}
 ```
 
 ### `list.show`
@@ -226,7 +226,7 @@ Remove by signal path or list index.
 Show list members.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"list.show","target":{"session_id":1},"args":{"name":"if0"}}
+{"api_version":"xwave.ai.v1","action":"list.show","target":{"session_id":"case_a"},"args":{"name":"if0"}}
 ```
 
 ### `list.value_at`
@@ -234,7 +234,7 @@ Show list members.
 Read all list signals at one time.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"list.value_at","target":{"session_id":1},"args":{"name":"if0","time":"42us","format":"binary"}}
+{"api_version":"xwave.ai.v1","action":"list.value_at","target":{"session_id":"case_a"},"args":{"name":"if0","time":"42us","format":"binary"}}
 ```
 
 ### `list.validate`
@@ -242,7 +242,7 @@ Read all list signals at one time.
 Check whether every signal in a list exists in the current FSDB.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"list.validate","target":{"session_id":1},"args":{"name":"if0"}}
+{"api_version":"xwave.ai.v1","action":"list.validate","target":{"session_id":"case_a"},"args":{"name":"if0"}}
 ```
 
 ### `list.diff`
@@ -250,7 +250,7 @@ Check whether every signal in a list exists in the current FSDB.
 Find the earliest time where list values are not all equal.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"list.diff","target":{"session_id":1},"args":{"name":"if0","begin":"0ns","end":"100us"}}
+{"api_version":"xwave.ai.v1","action":"list.diff","target":{"session_id":"case_a"},"args":{"name":"if0","begin":"0ns","end":"100us"}}
 ```
 
 ## APB Actions
@@ -260,7 +260,7 @@ Find the earliest time where list values are not all equal.
 Load and persist an APB config. `config_path` points to JSON, or `config` may inline the object.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"apb.config.load","target":{"session_id":1},"args":{"name":"apb0","config_path":"apb.json"}}
+{"api_version":"xwave.ai.v1","action":"apb.config.load","target":{"session_id":"case_a"},"args":{"name":"apb0","config_path":"apb.json"}}
 ```
 
 ### `apb.config.list`
@@ -268,7 +268,7 @@ Load and persist an APB config. `config_path` points to JSON, or `config` may in
 Return the saved APB config.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"apb.config.list","target":{"session_id":1},"args":{"name":"apb0"}}
+{"api_version":"xwave.ai.v1","action":"apb.config.list","target":{"session_id":"case_a"},"args":{"name":"apb0"}}
 ```
 
 ### `apb.query`
@@ -276,7 +276,7 @@ Return the saved APB config.
 Query APB reads or writes. Use `direction:"wr"` or `direction:"rd"`, with optional `address`, `num`, or `last`.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"apb.query","target":{"session_id":1},"args":{"name":"apb0","direction":"wr","address":"0x100","num":1}}
+{"api_version":"xwave.ai.v1","action":"apb.query","target":{"session_id":"case_a"},"args":{"name":"apb0","direction":"wr","address":"0x100","num":1}}
 ```
 
 ### `apb.cursor`
@@ -284,7 +284,7 @@ Query APB reads or writes. Use `direction:"wr"` or `direction:"rd"`, with option
 Iterate APB transactions with `op:"begin"`, `next`, `pre`, or `last`.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"apb.cursor","target":{"session_id":1},"args":{"name":"apb0","op":"begin","direction":"all"}}
+{"api_version":"xwave.ai.v1","action":"apb.cursor","target":{"session_id":"case_a"},"args":{"name":"apb0","op":"begin","direction":"all"}}
 ```
 
 ### `apb.transfer_window`
@@ -292,7 +292,7 @@ Iterate APB transactions with `op:"begin"`, `next`, `pre`, or `last`.
 Return APB transactions whose transfer time is inside a time range.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"apb.transfer_window","target":{"session_id":1},"args":{"name":"apb0","time_range":{"begin":"40us","end":"45us"},"direction":"all","limit":50}}
+{"api_version":"xwave.ai.v1","action":"apb.transfer_window","target":{"session_id":"case_a"},"args":{"name":"apb0","time_range":{"begin":"40us","end":"45us"},"direction":"all","limit":50}}
 ```
 
 ## AXI Actions
@@ -302,7 +302,7 @@ Return APB transactions whose transfer time is inside a time range.
 Load and persist an AXI config. Use a full five-channel config with `clk`, `rst_n`, and optional `edge`.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"axi.config.load","target":{"session_id":1},"args":{"name":"axi0","config_path":"axi.json"}}
+{"api_version":"xwave.ai.v1","action":"axi.config.load","target":{"session_id":"case_a"},"args":{"name":"axi0","config_path":"axi.json"}}
 ```
 
 ### `axi.config.list`
@@ -310,7 +310,7 @@ Load and persist an AXI config. Use a full five-channel config with `clk`, `rst_
 Return the saved AXI config.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"axi.config.list","target":{"session_id":1},"args":{"name":"axi0"}}
+{"api_version":"xwave.ai.v1","action":"axi.config.list","target":{"session_id":"case_a"},"args":{"name":"axi0"}}
 ```
 
 ### `axi.query`
@@ -318,7 +318,7 @@ Return the saved AXI config.
 Query AXI reads or writes. Use optional `address`, `id`, `num`, or `last`.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"axi.query","target":{"session_id":1},"args":{"name":"axi0","direction":"rd","id":"0x3","num":1}}
+{"api_version":"xwave.ai.v1","action":"axi.query","target":{"session_id":"case_a"},"args":{"name":"axi0","direction":"rd","id":"0x3","num":1}}
 ```
 
 ### `axi.cursor`
@@ -326,7 +326,7 @@ Query AXI reads or writes. Use optional `address`, `id`, `num`, or `last`.
 Iterate AXI transactions with `op:"begin"`, `next`, `pre`, or `last`.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"axi.cursor","target":{"session_id":1},"args":{"name":"axi0","op":"next","direction":"rd"}}
+{"api_version":"xwave.ai.v1","action":"axi.cursor","target":{"session_id":"case_a"},"args":{"name":"axi0","op":"next","direction":"rd"}}
 ```
 
 ### `axi.analysis`
@@ -334,7 +334,7 @@ Iterate AXI transactions with `op:"begin"`, `next`, `pre`, or `last`.
 Return AXI latency or outstanding statistics. Use `analysis:"latency"` or `analysis:"osd"` and optional `direction` or `id`.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"axi.analysis","target":{"session_id":1},"args":{"name":"axi0","analysis":"latency","direction":"all"}}
+{"api_version":"xwave.ai.v1","action":"axi.analysis","target":{"session_id":"case_a"},"args":{"name":"axi0","analysis":"latency","direction":"all"}}
 ```
 
 ### `axi.channel_stall`
@@ -342,7 +342,7 @@ Return AXI latency or outstanding statistics. Use `analysis:"latency"` or `analy
 Inspect one AXI channel valid/ready stall behavior. Channels: `aw`, `w`, `b`, `ar`, `r`.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"axi.channel_stall","target":{"session_id":1},"args":{"name":"axi0","channel":"r","time_range":{"begin":"40us","end":"45us"},"rules":{"max_wait_cycles":16}}}
+{"api_version":"xwave.ai.v1","action":"axi.channel_stall","target":{"session_id":"case_a"},"args":{"name":"axi0","channel":"r","time_range":{"begin":"40us","end":"45us"},"rules":{"max_wait_cycles":16}}}
 ```
 
 ### `axi.outstanding_timeline`
@@ -350,7 +350,7 @@ Inspect one AXI channel valid/ready stall behavior. Channels: `aw`, `w`, `b`, `a
 Return outstanding samples over a window. Use for buildup/root-cause evidence.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"axi.outstanding_timeline","target":{"session_id":1},"args":{"name":"axi0","time_range":{"begin":"40us","end":"45us"},"direction":"all","limit":100}}
+{"api_version":"xwave.ai.v1","action":"axi.outstanding_timeline","target":{"session_id":"case_a"},"args":{"name":"axi0","time_range":{"begin":"40us","end":"45us"},"direction":"all","limit":100}}
 ```
 
 ### `axi.request_response_pair`
@@ -358,7 +358,7 @@ Return outstanding samples over a window. Use for buildup/root-cause evidence.
 Return AXI transactions whose request or response time is inside a window.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"axi.request_response_pair","target":{"session_id":1},"args":{"name":"axi0","time_range":{"begin":"40us","end":"45us"},"direction":"rd","limit":20}}
+{"api_version":"xwave.ai.v1","action":"axi.request_response_pair","target":{"session_id":"case_a"},"args":{"name":"axi0","time_range":{"begin":"40us","end":"45us"},"direction":"rd","limit":20}}
 ```
 
 ### `axi.latency_outlier`
@@ -366,7 +366,7 @@ Return AXI transactions whose request or response time is inside a window.
 Return transactions with largest request-response latency.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"axi.latency_outlier","target":{"session_id":1},"args":{"name":"axi0","time_range":{"begin":"0ns","end":"100us"},"direction":"all","top_n":5,"limit":500}}
+{"api_version":"xwave.ai.v1","action":"axi.latency_outlier","target":{"session_id":"case_a"},"args":{"name":"axi0","time_range":{"begin":"0ns","end":"100us"},"direction":"all","top_n":5,"limit":500}}
 ```
 
 ## Event Actions
@@ -376,7 +376,7 @@ Return transactions with largest request-response latency.
 Load and persist a generic event config bound to the current FSDB.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"event.config.load","target":{"session_id":1},"args":{"name":"if0","config_path":"if0.event.json"}}
+{"api_version":"xwave.ai.v1","action":"event.config.load","target":{"session_id":"case_a"},"args":{"name":"if0","config_path":"if0.event.json"}}
 ```
 
 ### `event.config.list`
@@ -384,7 +384,7 @@ Load and persist a generic event config bound to the current FSDB.
 List event configs or return one config.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"event.config.list","target":{"session_id":1},"args":{"name":"if0"}}
+{"api_version":"xwave.ai.v1","action":"event.config.list","target":{"session_id":"case_a"},"args":{"name":"if0"}}
 ```
 
 ### `event.find`
@@ -392,13 +392,13 @@ List event configs or return one config.
 Find the first clock-sampled event matching an expression.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"event.find","target":{"session_id":1},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"40us","end":"45us"}}}
+{"api_version":"xwave.ai.v1","action":"event.find","target":{"session_id":"case_a"},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"40us","end":"45us"}}}
 ```
 
 With protocol context:
 
 ```json
-{"api_version":"xwave.ai.v1","action":"event.find","target":{"session_id":1},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"40us","end":"45us"},"context":{"window":"200ns","axi":"axi0","apb":"apb0"}}}
+{"api_version":"xwave.ai.v1","action":"event.find","target":{"session_id":"case_a"},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"40us","end":"45us"},"context":{"window":"200ns","axi":"axi0","apb":"apb0"}}}
 ```
 
 ### `event.export`
@@ -406,7 +406,7 @@ With protocol context:
 Export matching events. Always set a limit unless you intentionally need a large scan.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":1},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"40us","end":"45us"},"limit":100}}
+{"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":"case_a"},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"40us","end":"45us"},"limit":100}}
 ```
 
 ## Wave Fact Verification Actions
@@ -416,7 +416,7 @@ Export matching events. Always set a limit unless you intentionally need a large
 Check point-time conditions. Use this to verify hypotheses generated from RTL or protocol reasoning.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"verify.conditions","target":{"session_id":1},"args":{"time":"42us","conditions":[{"signal":"top.u_dut.fifo_full","op":"==","value":"1"},{"signal":"top.u_dut.state","op":"!=","value":"0"}]}}
+{"api_version":"xwave.ai.v1","action":"verify.conditions","target":{"session_id":"case_a"},"args":{"time":"42us","conditions":[{"signal":"top.u_dut.fifo_full","op":"==","value":"1"},{"signal":"top.u_dut.state","op":"!=","value":"0"}]}}
 ```
 
 ### `expr.eval_at`
@@ -424,7 +424,7 @@ Check point-time conditions. Use this to verify hypotheses generated from RTL or
 Evaluate a Boolean expression at one time using aliases.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"expr.eval_at","target":{"session_id":1},"args":{"time":"42us","signals":{"valid":"top.u_dut.valid","ready":"top.u_dut.ready"},"expr":"valid && !ready"}}
+{"api_version":"xwave.ai.v1","action":"expr.eval_at","target":{"session_id":"case_a"},"args":{"time":"42us","signals":{"valid":"top.u_dut.valid","ready":"top.u_dut.ready"},"expr":"valid && !ready"}}
 ```
 
 ### `window.verify`
@@ -432,7 +432,7 @@ Evaluate a Boolean expression at one time using aliases.
 Verify expressions sampled on clock edges over a window. `mode` may be `always`, `never`, or `eventually`.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"window.verify","target":{"session_id":1},"args":{"clock":"top.clk","sampling":"posedge","time_range":{"begin":"42us","end":"44us"},"conditions":[{"expr":"valid && !ready","signals":{"valid":"top.u_dut.valid","ready":"top.u_dut.ready"},"mode":"always"}]}}
+{"api_version":"xwave.ai.v1","action":"window.verify","target":{"session_id":"case_a"},"args":{"clock":"top.clk","sampling":"posedge","time_range":{"begin":"42us","end":"44us"},"conditions":[{"expr":"valid && !ready","signals":{"valid":"top.u_dut.valid","ready":"top.u_dut.ready"},"mode":"always"}]}}
 ```
 
 ### `signal.changes`
@@ -440,7 +440,7 @@ Verify expressions sampled on clock edges over a window. `mode` may be `always`,
 Return value changes for a signal in a range.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"signal.changes","target":{"session_id":1},"args":{"signal":"top.u_dut.fifo_full","time_range":{"begin":"40us","end":"45us"},"limit":20,"format":"binary"}}
+{"api_version":"xwave.ai.v1","action":"signal.changes","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.fifo_full","time_range":{"begin":"40us","end":"45us"},"limit":20,"format":"binary"}}
 ```
 
 ### `signal.stability`
@@ -448,7 +448,7 @@ Return value changes for a signal in a range.
 Check whether a signal remains stable in a range.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"signal.stability","target":{"session_id":1},"args":{"signal":"top.u_dut.active_count","time_range":{"begin":"42us","end":"44us"}}}
+{"api_version":"xwave.ai.v1","action":"signal.stability","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.active_count","time_range":{"begin":"42us","end":"44us"}}}
 ```
 
 ### `signal.trend`
@@ -456,7 +456,7 @@ Check whether a signal remains stable in a range.
 Sample a numeric signal on clock edges and summarize monotonicity, min, max, and stable state.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"signal.trend","target":{"session_id":1},"args":{"signal":"top.u_dut.active_count","clock":"top.clk","sampling":"posedge","time_range":{"begin":"40us","end":"45us"},"max_samples":10000}}
+{"api_version":"xwave.ai.v1","action":"signal.trend","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.active_count","clock":"top.clk","sampling":"posedge","time_range":{"begin":"40us","end":"45us"},"max_samples":10000}}
 ```
 
 ### `inspect_signal`
@@ -464,7 +464,7 @@ Sample a numeric signal on clock edges and summarize monotonicity, min, max, and
 Summarize signal transitions, period-like intervals, and glitches.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"inspect_signal","target":{"session_id":1},"args":{"signal":"top.clk","time_range":{"begin":"0ns","end":"1us"},"glitch_threshold":"1ns","limit":1000}}
+{"api_version":"xwave.ai.v1","action":"inspect_signal","target":{"session_id":"case_a"},"args":{"signal":"top.clk","time_range":{"begin":"0ns","end":"1us"},"glitch_threshold":"1ns","limit":1000}}
 ```
 
 ### `detect_anomaly`
@@ -472,7 +472,7 @@ Summarize signal transitions, period-like intervals, and glitches.
 Find waveform anomalies such as glitches, stuck values, and x/z.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"detect_anomaly","target":{"session_id":1},"args":{"signals":["top.u_dut.ready","top.u_dut.valid","top.u_dut.data"],"time_range":{"begin":"0ns","end":"100us"},"checks":[{"type":"glitch","min_pulse_width":"1ns"},{"type":"stuck","min_duration":"1us"},{"type":"unknown_xz"}],"max_findings":50}}
+{"api_version":"xwave.ai.v1","action":"detect_anomaly","target":{"session_id":"case_a"},"args":{"signals":["top.u_dut.ready","top.u_dut.valid","top.u_dut.data"],"time_range":{"begin":"0ns","end":"100us"},"checks":[{"type":"glitch","min_pulse_width":"1ns"},{"type":"stuck","min_duration":"1us"},{"type":"unknown_xz"}],"max_findings":50}}
 ```
 
 ### `handshake.inspect`
@@ -480,7 +480,7 @@ Find waveform anomalies such as glitches, stuck values, and x/z.
 Analyze a generic valid/ready interface sampled on a clock.
 
 ```json
-{"api_version":"xwave.ai.v1","action":"handshake.inspect","target":{"session_id":1},"args":{"clock":"top.clk","valid":"top.u_dut.valid","ready":"top.u_dut.ready","data":["top.u_dut.data"],"time_range":{"begin":"40us","end":"45us"},"rules":{"max_wait_cycles":100,"check_data_stable_when_stalled":true}}}
+{"api_version":"xwave.ai.v1","action":"handshake.inspect","target":{"session_id":"case_a"},"args":{"clock":"top.clk","valid":"top.u_dut.valid","ready":"top.u_dut.ready","data":["top.u_dut.data"],"time_range":{"begin":"40us","end":"45us"},"rules":{"max_wait_cycles":100,"check_data_stable_when_stalled":true}}}
 ```
 
 ## Recommended AI Workflows

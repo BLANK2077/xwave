@@ -5,6 +5,7 @@
 #include "../protocol/protocol.h"
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace xwave {
 
@@ -19,7 +20,7 @@ int cmd_value(int argc, char** argv) {
     const char* signal = argv[2];
     const char* time_str = argv[3];
     char fmt = 'H';
-    int session_id = -1;
+    std::string session_id;
 
     int start = 4;
     if (strcmp(argv[3], "--at") == 0 && argc >= 5) {
@@ -31,11 +32,11 @@ int cmd_value(int argc, char** argv) {
         if (strcmp(argv[i], "-b") == 0) fmt = 'B';
         else if (strcmp(argv[i], "-d") == 0) fmt = 'D';
         else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
-            session_id = atoi(argv[++i]);
+            session_id = argv[++i];
         }
     }
 
-    if (session_id < 0) {
+    if (session_id.empty()) {
         SessionManager manager;
         SessionInfo info;
         if (!manager.get_latest_session(info)) {
@@ -47,7 +48,7 @@ int cmd_value(int argc, char** argv) {
     {
         SessionManager manager;
         if (!manager.ensure_session_current(session_id)) {
-            fprintf(stderr, "Error: Session %d unavailable\n", session_id);
+            fprintf(stderr, "Error: Session %s unavailable\n", session_id.c_str());
             return 1;
         }
     }

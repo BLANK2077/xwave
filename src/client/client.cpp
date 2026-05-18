@@ -11,7 +11,7 @@
 
 namespace xwave {
 
-int session_connect(int session_id) {
+int session_connect(const std::string& session_id) {
     char sock_path[SOCK_PATH_LEN];
     get_sock_path(sock_path, session_id);
 
@@ -30,12 +30,12 @@ int session_connect(int session_id) {
     return fd;
 }
 
-bool send_command_and_print(int session_id, const char* cmd) {
+bool send_command_and_print(const std::string& session_id, const char* cmd) {
     SessionManager manager;
     if (!manager.ensure_session_current(session_id)) {
         SessionHealth health = manager.diagnose_session(session_id);
-        fprintf(stderr, "Error: Session %d unavailable: %s (status=%s)\n",
-                session_id,
+        fprintf(stderr, "Error: Session %s unavailable: %s (status=%s)\n",
+                session_id.c_str(),
                 health.message.c_str(),
                 session_health_status_name(health.status));
         return false;
@@ -44,8 +44,8 @@ bool send_command_and_print(int session_id, const char* cmd) {
     int fd = session_connect(session_id);
     if (fd < 0) {
         SessionHealth health = manager.diagnose_session(session_id);
-        fprintf(stderr, "Error: Session %d unavailable: %s (status=%s)\n",
-                session_id,
+        fprintf(stderr, "Error: Session %s unavailable: %s (status=%s)\n",
+                session_id.c_str(),
                 health.message.c_str(),
                 session_health_status_name(health.status));
         return false;
@@ -91,7 +91,7 @@ bool send_command_and_print(int session_id, const char* cmd) {
     return !server_error;
 }
 
-bool send_command_capture(int session_id, const char* cmd, std::string& payload) {
+bool send_command_capture(const std::string& session_id, const char* cmd, std::string& payload) {
     payload.clear();
     SessionManager manager;
     if (!manager.ensure_session_current(session_id)) return false;
@@ -124,7 +124,7 @@ bool send_command_capture(int session_id, const char* cmd, std::string& payload)
     return !server_error;
 }
 
-bool session_ping(int session_id) {
+bool session_ping(const std::string& session_id) {
     int fd = session_connect(session_id);
     if (fd < 0) return false;
 

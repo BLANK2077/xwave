@@ -4,6 +4,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+
+#include "../common/xwave_paths.h"
 
 #define PROTOCOL_VERSION    "1.0"
 
@@ -49,10 +52,12 @@
 #define ERROR_PREFIX        "ERROR: "
 
 // Get socket path for a given session ID
+inline void get_sock_path(char* buf, const std::string& session_id) {
+    snprintf(buf, SOCK_PATH_LEN, "%s", xwave::xwave_socket_path(session_id).c_str());
+}
+
 inline void get_sock_path(char* buf, int session_id) {
-    const char* home = getenv("HOME");
-    if (!home) home = "/tmp";
-    snprintf(buf, SOCK_PATH_LEN, "%s/%s/sessions/%d/socket", home, SOCK_PATH_PREFIX, session_id);
+    get_sock_path(buf, std::to_string(session_id));
 }
 
 // Get registry file path
@@ -70,8 +75,10 @@ inline void get_registry_lock_path(char* buf) {
 }
 
 // Get server-side debug log path for a session
+inline void get_debug_log_path(char* buf, const std::string& session_id) {
+    snprintf(buf, SOCK_PATH_LEN, "%s", xwave::xwave_debug_log_path(session_id).c_str());
+}
+
 inline void get_debug_log_path(char* buf, int session_id) {
-    const char* home = getenv("HOME");
-    if (!home) home = "/tmp";
-    snprintf(buf, SOCK_PATH_LEN, "%s/%s/sessions/%d/debug.log", home, SOCK_PATH_PREFIX, session_id);
+    get_debug_log_path(buf, std::to_string(session_id));
 }

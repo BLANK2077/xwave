@@ -169,7 +169,7 @@ bool SessionManager::fsdb_metadata_matches(const SessionInfo& expected, const Se
            expected.fsdb_inode == current.fsdb_inode;
 }
 
-WaitForServerResult SessionManager::wait_for_server(int session_id, pid_t pid) {
+WaitForServerResult SessionManager::wait_for_server(const std::string& session_id, pid_t pid) {
     WaitForServerResult result;
     char sock_path[SOCK_PATH_LEN];
     get_sock_path(sock_path, session_id);
@@ -179,8 +179,8 @@ WaitForServerResult SessionManager::wait_for_server(int session_id, pid_t pid) {
     if (iterations <= 0) iterations = 600;
     result.timeout_sec = timeout_sec;
 
-    debug_log("wait_for_server: session=%d pid=%d socket=%s timeout_sec=%d",
-              session_id, pid, sock_path, timeout_sec);
+    debug_log("wait_for_server: session=%s pid=%d socket=%s timeout_sec=%d",
+              session_id.c_str(), pid, sock_path, timeout_sec);
 
     for (int i = 0; i < iterations; ++i) {
         usleep(100000);
@@ -235,7 +235,7 @@ WaitForServerResult SessionManager::wait_for_server(int session_id, pid_t pid) {
     return result;
 }
 
-pid_t SessionManager::spawn_server(int session_id, const std::string& fsdb_file) {
+pid_t SessionManager::spawn_server(const std::string& session_id, const std::string& fsdb_file) {
     // Get path to current executable
     char self_path[1024] = {};
     ssize_t len = readlink("/proc/self/exe", self_path, sizeof(self_path) - 1);
@@ -248,9 +248,7 @@ pid_t SessionManager::spawn_server(int session_id, const std::string& fsdb_file)
     argv.push_back(self_path);
     argv.push_back((char*)"--server");
 
-    char session_id_str[16];
-    snprintf(session_id_str, sizeof(session_id_str), "%d", session_id);
-    argv.push_back(session_id_str);
+    argv.push_back(const_cast<char*>(session_id.c_str()));
 
     char* fsdb_file_str = const_cast<char*>(fsdb_file.c_str());
     argv.push_back(fsdb_file_str);
@@ -278,18 +276,19 @@ pid_t SessionManager::spawn_server(int session_id, const std::string& fsdb_file)
     return pid;
 }
 
-int SessionManager::create_session(const std::string& fsdb_file) {
+std::string SessionManager::create_session(const std::string& fsdb_file, const std::string& session_id) {
+    if (!SessionRegistry::is_valid_session_name(session_id)) {
+        debug_log("create_session: reason=invalid_session_id session=%s", session_id.c_str());
+        return "";
+    }
     std::string canonical = canonicalize_fsdb_path(fsdb_file);
     debug_log("create_session: input_fsdb=%s canonical_fsdb=%s", fsdb_file.c_str(), canonical.c_str());
     SessionInfo metadata;
     if (!populate_fsdb_metadata(canonical, metadata)) {
         debug_log("create_session: reason=fsdb_stat_failed path=%s errno=%d(%s)",
                   canonical.c_str(), errno, strerror(errno));
-        return 0;
+        return "";
     }
-    debug_log("create_session: fsdb_stat mtime=%ld size=%lld dev=%llu inode=%llu",
-              metadata.fsdb_mtime, metadata.fsdb_size,
-              metadata.fsdb_dev, metadata.fsdb_inode);
 
     int lock_fd = open_registry_lock();
     if (lock_fd < 0) {
@@ -297,91 +296,46 @@ int SessionManager::create_session(const std::string& fsdb_file) {
         get_registry_lock_path(lock_path);
         debug_log("create_session: reason=registry_lock_open_failed lock=%s errno=%d(%s)",
                   lock_path, errno, strerror(errno));
-        return 0;
+        return "";
     }
-
     if (flock(lock_fd, LOCK_EX) != 0) {
-        debug_log("create_session: reason=registry_lock_failed errno=%d(%s)",
-                  errno, strerror(errno));
+        debug_log("create_session: reason=registry_lock_failed errno=%d(%s)", errno, strerror(errno));
         close(lock_fd);
-        return 0;
+        return "";
     }
-    debug_log("create_session: registry_lock_acquired fd=%d", lock_fd);
 
-    // Clean up stale sessions first
-    debug_log("create_session: cleanup_stale_begin");
     cleanup();
-    debug_log("create_session: cleanup_stale_done");
-
-    std::vector<SessionInfo> existing;
-    registry_->load_all(existing);
-    debug_log("create_session: existing_sessions=%zu", existing.size());
-    std::vector<SessionInfo> unhealthy_same_fsdb;
-    for (const auto& session : existing) {
-        if (session.fsdb_file != canonical) continue;
-
-        SessionHealth health = diagnose_session(session.session_id);
-        if (health.healthy) {
-            debug_log("create_session: reuse_existing_session session=%d pid=%d socket=%s",
-                      session.session_id, session.server_pid, session.socket_path.c_str());
-            registry_->touch(session.session_id, time(nullptr));
-            flock(lock_fd, LOCK_UN);
-            close(lock_fd);
-            return session.session_id;
-        }
-
-        debug_log("create_session: found_unhealthy_same_fsdb session=%d status=%s message=%s",
-                  session.session_id,
-                  session_health_status_name(health.status),
-                  health.message.c_str());
-        unhealthy_same_fsdb.push_back(session);
-    }
-
-    if (!unhealthy_same_fsdb.empty()) {
+    if (registry_->exists(session_id)) {
+        debug_log("create_session: reason=session_id_exists session=%s", session_id.c_str());
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
-        for (const auto& session : unhealthy_same_fsdb) {
-            debug_log("create_session: removing_unhealthy_same_fsdb session=%d pid=%d socket=%s",
-                      session.session_id,
-                      session.server_pid,
-                      session.socket_path.c_str());
-            stop_process(session, true, false);
-        }
-        return create_session(canonical);
+        return "";
     }
-
-    // Get next session ID
-    int session_id = registry_->get_next_id();
     if (!xwave_ensure_session_dir(session_id)) {
-        debug_log("create_session: reason=session_dir_create_failed session=%d", session_id);
+        debug_log("create_session: reason=session_dir_create_failed session=%s", session_id.c_str());
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
-        return 0;
+        return "";
     }
-    debug_log("create_session: next_session_id=%d", session_id);
 
-    // Spawn server process
     pid_t pid = spawn_server(session_id, canonical);
     if (pid < 0) {
-        debug_log("create_session: reason=spawn_failed session=%d errno=%d(%s)",
-                  session_id, errno, strerror(errno));
+        debug_log("create_session: reason=spawn_failed session=%s errno=%d(%s)", session_id.c_str(), errno, strerror(errno));
         xwave_remove_session_dir(session_id);
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
-        return 0;
+        return "";
     }
-    debug_log("create_session: spawned_server session=%d pid=%d", session_id, pid);
 
-    // Get socket path
     char sock_path[SOCK_PATH_LEN];
     get_sock_path(sock_path, session_id);
     char debug_log_path[SOCK_PATH_LEN];
     get_debug_log_path(debug_log_path, session_id);
-    debug_log("create_session: socket_path=%s debug_log=%s", sock_path, debug_log_path);
+    debug_log("create_session: spawned_server session=%s pid=%d socket=%s debug_log=%s",
+              session_id.c_str(), pid, sock_path, debug_log_path);
 
     WaitForServerResult wait = wait_for_server(session_id, pid);
     if (!wait.ok) {
-        // Kill the server process if it didn't start properly
         debug_log("create_session: reason=%s elapsed_ms=%ld child_exited=%d child_status=%d socket_exists=%d connect_ok=%d ping_ok=%d",
                   wait.reason.c_str(), wait.elapsed_ms, wait.child_exited ? 1 : 0,
                   wait.child_status, wait.socket_exists ? 1 : 0,
@@ -391,10 +345,9 @@ int SessionManager::create_session(const std::string& fsdb_file) {
         xwave_remove_session_dir(session_id);
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
-        return 0;
+        return "";
     }
 
-    // Create session info
     SessionInfo session;
     session.session_id = session_id;
     session.socket_path = sock_path;
@@ -404,33 +357,31 @@ int SessionManager::create_session(const std::string& fsdb_file) {
     session.last_active = session.created_at;
     populate_fsdb_metadata(canonical, session);
 
-    // Add to registry
     if (!registry_->add(session)) {
-        debug_log("create_session: reason=registry_add_failed session=%d registry_write_failed",
-                  session_id);
+        debug_log("create_session: reason=registry_add_failed session=%s", session_id.c_str());
         kill(pid, SIGTERM);
         unlink(sock_path);
         xwave_remove_session_dir(session_id);
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
-        return 0;
+        return "";
     }
 
     SessionHealth health = diagnose_session(session_id);
     if (!health.healthy) {
-        debug_log("create_session: reason=post_create_health_failed session=%d status=%s message=%s",
-                  session_id, session_health_status_name(health.status), health.message.c_str());
+        debug_log("create_session: reason=post_create_health_failed session=%s status=%s message=%s",
+                  session_id.c_str(), session_health_status_name(health.status), health.message.c_str());
         kill(pid, SIGTERM);
         registry_->remove(session_id);
         unlink(sock_path);
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
-        return 0;
+        return "";
     }
 
     flock(lock_fd, LOCK_UN);
     close(lock_fd);
-    debug_log("create_session: success session=%d pid=%d socket=%s", session_id, pid, sock_path);
+    debug_log("create_session: success session=%s pid=%d socket=%s", session_id.c_str(), pid, sock_path);
     return session_id;
 }
 
@@ -472,8 +423,8 @@ bool SessionManager::stop_process(const SessionInfo& session, bool remove_record
     return true;
 }
 
-bool SessionManager::restart_session(int session_id) {
-    debug_log("restart_session: begin session=%d", session_id);
+bool SessionManager::restart_session(const std::string& session_id) {
+    debug_log("restart_session: begin session=%s", session_id.c_str());
     int lock_fd = open_registry_lock();
     if (lock_fd < 0) {
         debug_log("restart_session: reason=registry_lock_open_failed errno=%d(%s)",
@@ -489,7 +440,7 @@ bool SessionManager::restart_session(int session_id) {
 
     SessionInfo old_session;
     if (!registry_->get(session_id, old_session)) {
-        debug_log("restart_session: reason=registry_missing session=%d", session_id);
+        debug_log("restart_session: reason=registry_missing session=%s", session_id.c_str());
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
         return false;
@@ -544,18 +495,18 @@ bool SessionManager::restart_session(int session_id) {
     populate_fsdb_metadata(session.fsdb_file, session);
 
     bool ok = registry_->upsert(session);
-    debug_log("restart_session: registry_upsert=%d session=%d pid=%d",
-              ok ? 1 : 0, session_id, pid);
+    debug_log("restart_session: registry_upsert=%d session=%s pid=%d",
+              ok ? 1 : 0, session_id.c_str(), pid);
     flock(lock_fd, LOCK_UN);
     close(lock_fd);
     return ok;
 }
 
-bool SessionManager::ensure_session_current(int session_id) {
-    debug_log("ensure_session_current: begin session=%d", session_id);
+bool SessionManager::ensure_session_current(const std::string& session_id) {
+    debug_log("ensure_session_current: begin session=%s", session_id.c_str());
     SessionInfo session;
     if (!registry_->get(session_id, session)) {
-        debug_log("ensure_session_current: reason=registry_missing session=%d", session_id);
+        debug_log("ensure_session_current: reason=registry_missing session=%s", session_id.c_str());
         return false;
     }
 
@@ -566,9 +517,9 @@ bool SessionManager::ensure_session_current(int session_id) {
         return false;
     }
     if (!fsdb_metadata_matches(session, current)) {
-        fprintf(stderr, "FSDB changed, restarting session %d...\n", session_id);
-        debug_log("ensure_session_current: fsdb_changed session=%d old_mtime=%ld new_mtime=%ld old_size=%lld new_size=%lld",
-                  session_id, session.fsdb_mtime, current.fsdb_mtime,
+        fprintf(stderr, "FSDB changed, restarting session %s...\n", session_id.c_str());
+        debug_log("ensure_session_current: fsdb_changed session=%s old_mtime=%ld new_mtime=%ld old_size=%lld new_size=%lld",
+                  session_id.c_str(), session.fsdb_mtime, current.fsdb_mtime,
                   session.fsdb_size, current.fsdb_size);
         return restart_session(session_id);
     }
@@ -579,15 +530,15 @@ bool SessionManager::ensure_session_current(int session_id) {
     return health.healthy;
 }
 
-bool SessionManager::touch_session(int session_id) {
+bool SessionManager::touch_session(const std::string& session_id) {
     return registry_->touch(session_id, time(nullptr));
 }
 
-bool SessionManager::kill_session(int session_id) {
-    debug_log("kill_session: begin session=%d", session_id);
+bool SessionManager::kill_session(const std::string& session_id) {
+    debug_log("kill_session: begin session=%s", session_id.c_str());
     SessionInfo session;
     if (!registry_->get(session_id, session)) {
-        debug_log("kill_session: reason=registry_missing session=%d", session_id);
+        debug_log("kill_session: reason=registry_missing session=%s", session_id.c_str());
         return false;
     }
 
@@ -619,7 +570,7 @@ bool SessionManager::kill_all_sessions() {
     return true;
 }
 
-bool SessionManager::get_session(int session_id, SessionInfo& info) {
+bool SessionManager::get_session(const std::string& session_id, SessionInfo& info) {
     return registry_->get(session_id, info);
 }
 
@@ -647,8 +598,8 @@ bool SessionManager::gc_sessions() {
     for (const auto& session : sessions) {
         time_t last = session.last_active ? session.last_active : session.created_at;
         if (last > 0 && now - last > timeout) {
-            debug_log("gc_sessions: removing_idle session=%d pid=%d idle_sec=%ld timeout_sec=%d",
-                      session.session_id,
+            debug_log("gc_sessions: removing_idle session=%s pid=%d idle_sec=%ld timeout_sec=%d",
+                      session.session_id.c_str(),
                       session.server_pid,
                       static_cast<long>(now - last),
                       timeout);
@@ -660,10 +611,10 @@ bool SessionManager::gc_sessions() {
     return true;
 }
 
-SessionHealth SessionManager::diagnose_session(int session_id) {
+SessionHealth SessionManager::diagnose_session(const std::string& session_id) {
     SessionHealth health;
     health.session_id = session_id;
-    debug_log("diagnose_session: begin session=%d", session_id);
+    debug_log("diagnose_session: begin session=%s", session_id.c_str());
 
     SessionInfo session;
     if (!registry_->get(session_id, session)) {
@@ -763,11 +714,11 @@ SessionHealth SessionManager::diagnose_session(int session_id) {
     return health;
 }
 
-bool SessionManager::is_session_alive(int session_id) {
+bool SessionManager::is_session_alive(const std::string& session_id) {
     return diagnose_session(session_id).healthy;
 }
 
-std::string SessionManager::get_socket_path(int session_id) {
+std::string SessionManager::get_socket_path(const std::string& session_id) {
     char path[SOCK_PATH_LEN];
     get_sock_path(path, session_id);
     return std::string(path);

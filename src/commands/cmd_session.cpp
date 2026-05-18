@@ -18,7 +18,7 @@ namespace xwave {
 void print_help(const char* prog) {
     printf("XWave - NPI-based FSDB Waveform Query Tool\n\n");
     printf("Usage:\n");
-    printf("  %s open <fsdb-file> [--debug]  Open FSDB and create new session\n", prog);
+    printf("  %s open <fsdb-file> --name <name> [--debug]  Open FSDB and create named session\n", prog);
     printf("  %s session list             List all active sessions\n", prog);
     printf("  %s session kill <id|all> [--debug]  Kill a specific session or all\n", prog);
     printf("  %s session gc [--debug]     Clean stale and idle sessions\n", prog);
@@ -52,10 +52,10 @@ void print_help(const char* prog) {
     printf("  %s ai schema|actions          Show AI JSON schema or supported actions\n", prog);
     printf("  %s help [topic]             Show this help or detailed topic help\n", prog);
     printf("\nExamples:\n");
-    printf("  %s open waves.fsdb\n", prog);
+    printf("  %s open waves.fsdb --name case_a\n", prog);
     printf("  %s value top.clk 100ns -b\n", prog);
     printf("  %s session list\n", prog);
-    printf("  %s session kill 1\n", prog);
+    printf("  %s session kill case_a\n", prog);
     printf("\nDetailed help topics:\n");
     printf("  %s help open|session|value|cursor|list|scope|apb|axi|event|ai\n", prog);
     printf("\nTimeSpec accepts absolute time, cursor, or cursor offset: 100ns, @fail, @fail-20ns, @+5ns.\n");
@@ -280,7 +280,7 @@ static void print_ai_help(const char* prog) {
     printf("Request envelope:\n");
     printf("  api_version: \"xwave.ai.v1\"\n");
     printf("  action:      e.g. value.at, event.find, window.verify, handshake.inspect\n");
-    printf("  target:      {\"fsdb\": \"waves.fsdb\", \"auto_open\": true} or {\"session_id\": 1}\n");
+    printf("  target:      {\"fsdb\": \"waves.fsdb\", \"name\": \"case_a\", \"auto_open\": true} or {\"session_id\": \"case_a\"}\n");
     printf("  args:        action-specific arguments\n");
     printf("  limits:      max_rows/max_events/max_samples/timeout_ms where applicable\n\n");
     printf("Example:\n");
@@ -339,22 +339,41 @@ static long read_rss_kb(pid_t pid) {
 }
 
 int cmd_open(int argc, char** argv) {
-    if (argc < 3) {
-        fprintf(stderr, "Usage: %s open <fsdb-file>\n\n", argv[0]);
+    if (argc < 5) {
+        fprintf(stderr, "Usage: %s open <fsdb-file> --name <name>\n\n", argv[0]);
         print_help(argv[0]);
         return 1;
     }
 
     const char* fsdb_file = argv[2];
+    const char* name = nullptr;
+    for (int i = 3; i < argc; ++i) {
+        if ((strcmp(argv[i], "--name") == 0 || strcmp(argv[i], "-n") == 0) && i + 1 < argc) {
+            name = argv[++i];
+        }
+    }
+    if (!name) {
+        fprintf(stderr, "Error: session name is required; use --name <name>\n");
+        return 1;
+    }
+    if (!SessionRegistry::is_valid_session_name(name)) {
+        fprintf(stderr, "Error: Invalid session name '%s'. Use 1-256 characters from [A-Za-z0-9_.-].\n", name);
+        return 1;
+    }
     SessionManager manager;
-    int session_id = manager.create_session(fsdb_file);
+    SessionRegistry registry;
+    if (registry.exists(name)) {
+        fprintf(stderr, "Error: SESSION_ID_EXISTS: session '%s' already exists\n", name);
+        return 1;
+    }
+    std::string session_id = manager.create_session(fsdb_file, name);
 
-    if (session_id <= 0) {
+    if (session_id.empty()) {
         fprintf(stderr, "Error: Failed to create session\n");
         return 1;
     }
 
-    printf("[Session %d] FSDB opened: %s\n", session_id, fsdb_file);
+    printf("[Session %s] FSDB opened: %s\n", session_id.c_str(), fsdb_file);
     return 0;
 }
 
@@ -367,13 +386,13 @@ int cmd_session_list() {
         return 0;
     }
 
-    printf("ID  | PID     | RSS(KB) | Created             | Last Active         | FSDB File\n");
-    printf("----|---------|---------|---------------------|---------------------|------------------------------\n");
+    printf("ID                 | PID     | RSS(KB) | Created             | Last Active         | FSDB File\n");
+    printf("-------------------|---------|---------|---------------------|---------------------|------------------------------\n");
 
     for (const auto& s : sessions) {
         long rss = read_rss_kb(s.server_pid);
-        printf("%-3d | %-7d | %-7ld | %-19s | %-19s | %s\n",
-               s.session_id,
+        printf("%-18s | %-7d | %-7ld | %-19s | %-19s | %s\n",
+               s.session_id.c_str(),
                s.server_pid,
                rss,
                format_epoch(s.created_at).c_str(),
@@ -401,44 +420,40 @@ int cmd_session_kill(const char* id_str) {
         return 0;
     }
 
-    int session_id = atoi(id_str);
-    if (session_id <= 0) {
-        fprintf(stderr, "Error: Invalid session ID: %s\n", id_str);
-        return 1;
-    }
+    std::string session_id = id_str;
 
     SessionManager manager;
     SessionHealth health = manager.diagnose_session(session_id);
     if (health.status == SessionHealthStatus::RegistryMissing) {
-        fprintf(stderr, "Error: Session %d is not in registry\n", session_id);
+        fprintf(stderr, "Error: Session %s is not in registry\n", session_id.c_str());
         return 1;
     }
 
     if (!health.healthy) {
-        printf("Cleaning stale session %d (%s: %s)...\n",
-               session_id,
+        printf("Cleaning stale session %s (%s: %s)...\n",
+               session_id.c_str(),
                session_health_status_name(health.status),
                health.message.c_str());
     } else {
-        printf("Killing session %d...\n", session_id);
+        printf("Killing session %s...\n", session_id.c_str());
     }
 
     if (manager.kill_session(session_id)) {
-        printf("Session %d removed.\n", session_id);
+        printf("Session %s removed.\n", session_id.c_str());
         return 0;
     } else {
-        fprintf(stderr, "Error: Failed to kill session %d\n", session_id);
+        fprintf(stderr, "Error: Failed to kill session %s\n", session_id.c_str());
         return 1;
     }
 }
 
 int cmd_session_doctor(int argc, char** argv) {
-    int session_id = -1;
+    std::string session_id;
     bool json = false;
 
     for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
-            session_id = atoi(argv[++i]);
+            session_id = argv[++i];
         } else if (strcmp(argv[i], "-json") == 0) {
             json = true;
         } else if (strcmp(argv[i], "--debug") == 0) {
@@ -449,7 +464,7 @@ int cmd_session_doctor(int argc, char** argv) {
         }
     }
 
-    if (session_id <= 0) {
+    if (session_id.empty()) {
         fprintf(stderr, "Usage: %s session doctor -s <sid> [-json] [--debug]\n", argv[0]);
         fprintf(stderr, "Error: session doctor requires -s <sid>\n");
         return 1;
@@ -470,16 +485,16 @@ int cmd_session_doctor(int argc, char** argv) {
         printf("%s\n", out.dump(2).c_str());
     } else {
         if (health.healthy) {
-            printf("Session %d healthy\n", session_id);
+            printf("Session %s healthy\n", session_id.c_str());
             printf("  status: %s\n", session_health_status_name(health.status));
             printf("  pid: %d\n", health.info.server_pid);
             printf("  socket_path: %s\n", health.info.socket_path.c_str());
             printf("  fsdb_file: %s\n", health.info.fsdb_file.c_str());
         } else {
-            printf("Session %d unhealthy\n", session_id);
+            printf("Session %s unhealthy\n", session_id.c_str());
             printf("  status: %s\n", session_health_status_name(health.status));
             printf("  message: %s\n", health.message.c_str());
-            if (health.info.session_id > 0) {
+            if (!health.info.session_id.empty()) {
                 printf("  pid: %d\n", health.info.server_pid);
                 printf("  socket_path: %s\n", health.info.socket_path.c_str());
                 printf("  fsdb_file: %s\n", health.info.fsdb_file.c_str());

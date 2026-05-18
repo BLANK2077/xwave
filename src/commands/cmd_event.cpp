@@ -19,9 +19,9 @@
 
 namespace xwave {
 
-static bool resolve_session_info(int sid, SessionInfo& info) {
+static bool resolve_session_info(const std::string& sid, SessionInfo& info) {
     SessionManager manager;
-    bool ok = sid >= 0 ? manager.get_session(sid, info) : manager.get_latest_session(info);
+    bool ok = !sid.empty() ? manager.get_session(sid, info) : manager.get_latest_session(info);
     if (!ok) return false;
     if (!manager.ensure_session_current(info.session_id)) return false;
     return manager.get_session(info.session_id, info);
@@ -183,7 +183,7 @@ static void print_event_config(const EventConfig& config) {
 }
 
 static bool resolve_event_name(EventManager& em,
-                               int session_id,
+                               const std::string& session_id,
                                const std::string& fsdb_file,
                                const char* explicit_name,
                                std::string& out_name) {
@@ -192,8 +192,8 @@ static bool resolve_event_name(EventManager& em,
         return true;
     }
     if (!em.get_latest_event(session_id, fsdb_file, out_name)) {
-        fprintf(stderr, "Error: No event configs found for session %d and FSDB %s\n",
-                session_id, fsdb_file.c_str());
+        fprintf(stderr, "Error: No event configs found for session %s and FSDB %s\n",
+                session_id.c_str(), fsdb_file.c_str());
         return false;
     }
     return true;
@@ -216,10 +216,10 @@ int cmd_event(int argc, char** argv) {
     if (strcmp(subcmd_or_file, "find") != 0 &&
         strcmp(subcmd_or_file, "export") != 0 &&
         strcmp(subcmd_or_file, "list") != 0) {
-        int session_id = -1;
+        std::string session_id;
         const char* name = nullptr;
         for (int i = 3; i < argc; ++i) {
-            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
             else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) name = argv[++i];
         }
         if (!name) {
@@ -240,15 +240,15 @@ int cmd_event(int argc, char** argv) {
             fprintf(stderr, "Error: Failed to create event config '%s'\n", name);
             return 1;
         }
-        printf("Event config '%s' loaded for session %d.\n", name, session_id);
+        printf("Event config '%s' loaded for session %s.\n", name, session_id.c_str());
         return 0;
     }
 
     if (strcmp(subcmd_or_file, "list") == 0) {
-        int session_id = -1;
+        std::string session_id;
         const char* name = nullptr;
         for (int i = 3; i < argc; ++i) {
-            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
             else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) name = argv[++i];
         }
         SessionInfo session;
@@ -273,7 +273,7 @@ int cmd_event(int argc, char** argv) {
     }
 
     const char* subcmd = subcmd_or_file;
-    int session_id = -1;
+    std::string session_id;
     const char* name = nullptr;
     const char* expr = nullptr;
     const char* begin_str = nullptr;
@@ -287,7 +287,7 @@ int cmd_event(int argc, char** argv) {
     const char* apb_name = nullptr;
 
     for (int i = 3; i < argc; ++i) {
-        if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+        if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
         else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) name = argv[++i];
         else if (strcmp(argv[i], "-expr") == 0 && i + 1 < argc) expr = argv[++i];
         else if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) begin_str = argv[++i];

@@ -74,40 +74,14 @@ static bool unlock_file(int fd) {
     return flock(fd, LOCK_UN) == 0;
 }
 
-bool EventManager::migrate_legacy(int session_id, std::vector<EventConfig>& configs, std::vector<std::string>& fsdb_files) {
-    configs.clear();
-    fsdb_files.clear();
-    if (!xwave_legacy_registry_has_session(session_id)) return false;
-
-    int fd = open(xwave_legacy_events_path().c_str(), O_RDONLY);
-    if (fd < 0) return false;
-    FILE* fp = fdopen(fd, "r");
-    if (!fp) {
-        close(fd);
-        return false;
-    }
-    char* line = nullptr;
-    size_t len = 0;
-    while (getline(&line, &len, fp) != -1) {
-        try {
-            Json j = Json::parse(line);
-            if (j.value("session_id", -1) != session_id) continue;
-            std::string fsdb_file;
-            EventConfig cfg;
-            if (json_to_config(j, fsdb_file, cfg)) {
-                configs.push_back(cfg);
-                fsdb_files.push_back(fsdb_file);
-            }
-        } catch (...) {
-        }
-    }
-    if (line) free(line);
-    fclose(fp);
-    if (!configs.empty()) save_session(session_id, configs, fsdb_files);
-    return true;
+bool EventManager::migrate_legacy(const std::string& session_id, std::vector<EventConfig>& configs, std::vector<std::string>& fsdb_files) {
+    (void)session_id;
+    (void)configs;
+    (void)fsdb_files;
+    return false;
 }
 
-bool EventManager::load_session(int session_id, std::vector<EventConfig>& configs, std::vector<std::string>& fsdb_files) {
+bool EventManager::load_session(const std::string& session_id, std::vector<EventConfig>& configs, std::vector<std::string>& fsdb_files) {
     configs.clear();
     fsdb_files.clear();
     int fd = open(xwave_events_path(session_id).c_str(), O_RDONLY);
@@ -147,7 +121,7 @@ bool EventManager::load_session(int session_id, std::vector<EventConfig>& config
     return true;
 }
 
-bool EventManager::save_session(int session_id, const std::vector<EventConfig>& configs, const std::vector<std::string>& fsdb_files) {
+bool EventManager::save_session(const std::string& session_id, const std::vector<EventConfig>& configs, const std::vector<std::string>& fsdb_files) {
     if (!xwave_ensure_session_dir(session_id)) return false;
     int fd = open(xwave_events_path(session_id).c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) return false;
@@ -168,7 +142,7 @@ bool EventManager::save_session(int session_id, const std::vector<EventConfig>& 
     return ok;
 }
 
-bool EventManager::create_event(int session_id, const std::string& fsdb_file, const EventConfig& config) {
+bool EventManager::create_event(const std::string& session_id, const std::string& fsdb_file, const EventConfig& config) {
     std::vector<EventConfig> configs;
     std::vector<std::string> fsdb_files;
     if (!load_session(session_id, configs, fsdb_files)) return false;
@@ -185,7 +159,7 @@ bool EventManager::create_event(int session_id, const std::string& fsdb_file, co
     return save_session(session_id, out_configs, out_fsdbs);
 }
 
-bool EventManager::delete_event(int session_id, const std::string& fsdb_file, const std::string& name) {
+bool EventManager::delete_event(const std::string& session_id, const std::string& fsdb_file, const std::string& name) {
     std::vector<EventConfig> configs;
     std::vector<std::string> fsdb_files;
     if (!load_session(session_id, configs, fsdb_files)) return false;
@@ -203,13 +177,13 @@ bool EventManager::delete_event(int session_id, const std::string& fsdb_file, co
     return removed && save_session(session_id, out_configs, out_fsdbs);
 }
 
-bool EventManager::delete_session_events(int session_id) {
+bool EventManager::delete_session_events(const std::string& session_id) {
     std::string path = xwave_events_path(session_id);
     if (unlink(path.c_str()) == 0) return true;
     return access(path.c_str(), F_OK) != 0;
 }
 
-bool EventManager::get_event(int session_id, const std::string& fsdb_file, const std::string& name, EventConfig& config) {
+bool EventManager::get_event(const std::string& session_id, const std::string& fsdb_file, const std::string& name, EventConfig& config) {
     std::vector<EventConfig> configs;
     std::vector<std::string> fsdb_files;
     if (!load_session(session_id, configs, fsdb_files)) return false;
@@ -222,7 +196,7 @@ bool EventManager::get_event(int session_id, const std::string& fsdb_file, const
     return false;
 }
 
-bool EventManager::get_latest_event(int session_id, const std::string& fsdb_file, std::string& name) {
+bool EventManager::get_latest_event(const std::string& session_id, const std::string& fsdb_file, std::string& name) {
     std::vector<EventConfig> configs;
     std::vector<std::string> fsdb_files;
     if (!load_session(session_id, configs, fsdb_files)) return false;
@@ -235,7 +209,7 @@ bool EventManager::get_latest_event(int session_id, const std::string& fsdb_file
     return false;
 }
 
-std::vector<std::string> EventManager::list_events(int session_id, const std::string& fsdb_file) {
+std::vector<std::string> EventManager::list_events(const std::string& session_id, const std::string& fsdb_file) {
     std::vector<EventConfig> configs;
     std::vector<std::string> fsdb_files;
     std::vector<std::string> names;

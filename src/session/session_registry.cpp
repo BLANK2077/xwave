@@ -10,6 +10,7 @@
 #include <signal.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <cctype>
 
 namespace xwave {
 
@@ -33,6 +34,7 @@ bool SessionRegistry::unlock_file(int fd) {
 
 static Json session_to_json(const SessionInfo& session) {
     Json j;
+    j["id"] = session.session_id;
     j["session_id"] = session.session_id;
     j["socket_path"] = session.socket_path;
     j["fsdb_file"] = session.fsdb_file;
@@ -48,7 +50,7 @@ static Json session_to_json(const SessionInfo& session) {
 
 static bool json_to_session(const Json& j, SessionInfo& session) {
     if (!j.is_object()) return false;
-    session.session_id = j.value("session_id", 0);
+    session.session_id = j.value("id", j.value("session_id", std::string()));
     session.socket_path = j.value("socket_path", "");
     session.fsdb_file = j.value("fsdb_file", "");
     session.server_pid = static_cast<pid_t>(j.value("server_pid", 0));
@@ -58,77 +60,18 @@ static bool json_to_session(const Json& j, SessionInfo& session) {
     session.fsdb_size = j.value("fsdb_size", 0LL);
     session.fsdb_dev = j.value("fsdb_dev", 0ULL);
     session.fsdb_inode = j.value("fsdb_inode", 0ULL);
-    return session.session_id > 0 && !session.fsdb_file.empty();
+    return !session.session_id.empty() && !session.fsdb_file.empty();
 }
 
 bool SessionRegistry::parse_legacy_line(const char* line, SessionInfo& session) {
-    char socket_path[512] = {};
-    char fsdb_file[1024] = {};
-    int pid;
-    long created_at;
-    long last_active = 0;
-    long fsdb_mtime = 0;
-    long long fsdb_size = 0;
-    unsigned long long fsdb_dev = 0;
-    unsigned long long fsdb_inode = 0;
-
-    int matched = sscanf(line, "%d|%511[^|]|%1023[^|]|%d|%ld|%ld|%ld|%lld|%llu|%llu",
-               &session.session_id,
-               socket_path,
-               fsdb_file,
-               &pid,
-               &created_at,
-               &last_active,
-               &fsdb_mtime,
-               &fsdb_size,
-               &fsdb_dev,
-               &fsdb_inode);
-    if (matched != 5 && matched != 10) {
-        return false;
-    }
-
-    session.socket_path = xwave_socket_path(session.session_id);
-    session.fsdb_file = fsdb_file;
-    session.server_pid = pid;
-    session.created_at = created_at;
-    session.last_active = (matched == 10) ? last_active : created_at;
-    session.fsdb_mtime = fsdb_mtime;
-    session.fsdb_size = fsdb_size;
-    session.fsdb_dev = fsdb_dev;
-    session.fsdb_inode = fsdb_inode;
-    if (matched == 5) {
-        struct stat st;
-        if (stat(session.fsdb_file.c_str(), &st) == 0) {
-            session.fsdb_mtime = static_cast<long>(st.st_mtime);
-            session.fsdb_size = static_cast<long long>(st.st_size);
-            session.fsdb_dev = static_cast<unsigned long long>(st.st_dev);
-            session.fsdb_inode = static_cast<unsigned long long>(st.st_ino);
-        }
-    }
-    return true;
+    (void)line;
+    (void)session;
+    return false;
 }
 
 bool SessionRegistry::load_legacy(std::vector<SessionInfo>& sessions) {
     sessions.clear();
-    std::string legacy_path = xwave_legacy_registry_path();
-    int fd = open(legacy_path.c_str(), O_RDONLY);
-    if (fd < 0) return false;
-
-    FILE* fp = fdopen(fd, "r");
-    if (!fp) {
-        close(fd);
-        return false;
-    }
-
-    char line[2048];
-    while (fgets(line, sizeof(line), fp)) {
-        SessionInfo session;
-        if (parse_legacy_line(line, session)) {
-            sessions.push_back(session);
-        }
-    }
-    fclose(fp);
-    return true;
+    return false;
 }
 
 bool SessionRegistry::load_all(std::vector<SessionInfo>& sessions) {
@@ -137,9 +80,6 @@ bool SessionRegistry::load_all(std::vector<SessionInfo>& sessions) {
 
     int fd = open(registry_path_.c_str(), O_RDONLY);
     if (fd < 0) {
-        if (load_legacy(sessions)) {
-            save_all(sessions);
-        }
         return true;
     }
 
@@ -244,14 +184,27 @@ bool SessionRegistry::upsert(const SessionInfo& session) {
     return save_all(sessions);
 }
 
-bool SessionRegistry::touch(int session_id, time_t last_active) {
+bool SessionRegistry::exists(const std::string& session_id) {
+    SessionInfo session;
+    return get(session_id, session);
+}
+
+bool SessionRegistry::is_valid_session_name(const std::string& name) {
+    if (name.empty() || name.size() > 256) return false;
+    for (unsigned char c : name) {
+        if (!std::isalnum(c) && c != '_' && c != '.' && c != '-') return false;
+    }
+    return true;
+}
+
+bool SessionRegistry::touch(const std::string& session_id, time_t last_active) {
     SessionInfo session;
     if (!get(session_id, session)) return false;
     session.last_active = last_active;
     return upsert(session);
 }
 
-bool SessionRegistry::remove(int session_id) {
+bool SessionRegistry::remove(const std::string& session_id) {
     std::vector<SessionInfo> sessions;
     if (!load_all(sessions)) return false;
 
@@ -270,7 +223,7 @@ bool SessionRegistry::remove(int session_id) {
     return ok;
 }
 
-bool SessionRegistry::get(int session_id, SessionInfo& session) {
+bool SessionRegistry::get(const std::string& session_id, SessionInfo& session) {
     std::vector<SessionInfo> sessions;
     if (!load_all(sessions)) return false;
 
@@ -286,29 +239,8 @@ bool SessionRegistry::get(int session_id, SessionInfo& session) {
 bool SessionRegistry::get_latest(SessionInfo& session) {
     std::vector<SessionInfo> sessions;
     if (!load_all(sessions) || sessions.empty()) return false;
-
-    int max_id = -1;
-    size_t max_idx = 0;
-    for (size_t i = 0; i < sessions.size(); ++i) {
-        if (sessions[i].session_id > max_id) {
-            max_id = sessions[i].session_id;
-            max_idx = i;
-        }
-    }
-
-    session = sessions[max_idx];
+    session = sessions.back();
     return true;
-}
-
-int SessionRegistry::get_next_id() {
-    std::vector<SessionInfo> sessions;
-    if (!load_all(sessions)) return 1;
-
-    int max_id = 0;
-    for (const auto& s : sessions) {
-        if (s.session_id > max_id) max_id = s.session_id;
-    }
-    return max_id + 1;
 }
 
 bool SessionRegistry::cleanup_stale() {

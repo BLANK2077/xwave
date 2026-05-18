@@ -17,14 +17,14 @@ tools/xwave-env <command> ...
 Open an FSDB:
 
 ```bash
-tools/xwave-env open /path/to/waves.fsdb
+tools/xwave-env open /path/to/waves.fsdb --name case_a
 ```
 
 Example output:
 
 ```text
-[Session 1] Ready (FSDB: 0 ~ 200000)
-[Session 1] FSDB opened: /path/to/waves.fsdb
+[Session case_a] Ready (FSDB: 0 ~ 200000)
+[Session case_a] FSDB opened: /path/to/waves.fsdb
 ```
 
 Query values:
@@ -54,18 +54,26 @@ tools/xwave-env list diff -l if0 -b 0ns -e 100us
 Clean up when done:
 
 ```bash
-tools/xwave-env session kill 1
+tools/xwave-env session kill case_a
 ```
 
 ## Core Concepts
 
 ### Sessions
 
-`open` canonicalizes the FSDB path and reuses an existing healthy session for the same file. Each session owns:
+`open` requires an explicit session name:
+
+```bash
+tools/xwave-env open /path/to/waves.fsdb --name case_a
+```
+
+The name is the session ID used by `-s <name>` and AI `target.session_id`. It may be up to 256 characters and may contain letters, digits, `_`, `.`, and `-`. Creating a session with an existing name fails with `SESSION_ID_EXISTS`; use a different name or kill the old session first.
+
+`open` canonicalizes the FSDB path and creates a named daemon session. Each session owns:
 
 - one FSDB file and one NPI context
 - one daemon process
-- one Unix domain socket under `~/.xwave/sessions/<sid>/socket`
+- one Unix domain socket under `~/.xwave/sessions/<hashed-session-dir>/socket`
 - one registry record in `~/.xwave/registry.json`
 
 Sessions record the FSDB mtime, size, device, and inode. If the FSDB is replaced or updated, the next access reports the change and restarts the daemon while preserving the session ID and loaded configs.
@@ -76,7 +84,7 @@ Sessions also have an idle timeout. The default is 1800 seconds and can be overr
 export XWAVE_IDLE_TIMEOUT_SEC=28800
 ```
 
-After an idle timeout, the daemon exits and releases the FSDB/NPI handle. Running `open <fsdb>` again creates a fresh session. If it does not, use `--debug` to see the exact failed stage.
+After an idle timeout, the daemon exits and releases the FSDB/NPI handle. Running `open <fsdb> --name <new-name>` creates a fresh session. If it does not, use `--debug` to see the exact failed stage.
 
 ### TimeSpec And Cursors
 
@@ -114,9 +122,9 @@ xwave sessions are local to one machine. The daemon is reached through a Unix do
 Recommended setup: ask IT for a dedicated queue containing exactly one suitable machine for xwave/xtrace style NPI tools.
 
 ```bash
-bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env open /path/to/waves.fsdb"
+bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env open /path/to/waves.fsdb --name case_a"
 bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env value top.clk 10ns -s 1"
-bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env session kill 1"
+bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env session kill case_a"
 ```
 
 The dedicated host must have access to the shared FSDB path and the same Verdi/NPI/license environment. If a single-host queue is not available, the next simplest option is `bsub -m <host>`. If fixed-host usage is still not acceptable, xwave needs architecture work such as a TCP daemon, remote forwarding, or a no-daemon single-command mode.
@@ -274,7 +282,7 @@ Current AI actions cover `session/cursor/scope/value/list/apb/axi/event`, condit
 Use `--debug` or `XWAVE_DEBUG=1` when session creation or reconnect fails.
 
 ```bash
-tools/xwave-env open /path/to/waves.fsdb --debug
+tools/xwave-env open /path/to/waves.fsdb --name case_a --debug
 tools/xwave-env session doctor -s 1 --debug
 tools/xwave-env session gc --debug
 ```
@@ -282,7 +290,7 @@ tools/xwave-env session gc --debug
 Debug output goes to stderr. Server startup details are written to:
 
 ```text
-~/.xwave/sessions/<sid>/debug.log
+~/.xwave/sessions/<hashed-session-dir>/debug.log
 ```
 
 The trace identifies stages such as FSDB stat, registry lock, fork/exec, `npi_init`, `npi_fsdb_open`, socket bind/listen, connect, PING, idle timeout, and cleanup reason.
@@ -300,7 +308,7 @@ Common causes of `Failed to create session`:
 
 | Command | Description |
 |---|---|
-| `xwave open <fsdb-file> [--debug]` | Open an FSDB and create or reuse a session |
+| `xwave open <fsdb-file> --name <name> [--debug]` | Open an FSDB and create a named session |
 | `xwave session list` | List active sessions |
 | `xwave session doctor -s <sid> [-json] [--debug]` | Diagnose a session |
 | `xwave session gc [--debug]` | Clean stale/idle sessions |
@@ -385,16 +393,16 @@ Persistent files:
 
 - `~/.xwave/registry.json`: active session records
 - `~/.xwave/registry.lock`: registry lock
-- `~/.xwave/sessions/<sid>/session.json`: per-session metadata
-- `~/.xwave/sessions/<sid>/socket`: session socket
-- `~/.xwave/sessions/<sid>/debug.log`: server debug log
-- `~/.xwave/sessions/<sid>/lists.json`: signal lists
-- `~/.xwave/sessions/<sid>/apb.json`: APB configs
-- `~/.xwave/sessions/<sid>/axi.json`: AXI configs
-- `~/.xwave/sessions/<sid>/events.json`: event configs
-- `~/.xwave/sessions/<sid>/cursors.json`: session time cursors
+- `~/.xwave/sessions/<hashed-session-dir>/session.json`: per-session metadata
+- `~/.xwave/sessions/<hashed-session-dir>/socket`: session socket
+- `~/.xwave/sessions/<hashed-session-dir>/debug.log`: server debug log
+- `~/.xwave/sessions/<hashed-session-dir>/lists.json`: signal lists
+- `~/.xwave/sessions/<hashed-session-dir>/apb.json`: APB configs
+- `~/.xwave/sessions/<hashed-session-dir>/axi.json`: AXI configs
+- `~/.xwave/sessions/<hashed-session-dir>/events.json`: event configs
+- `~/.xwave/sessions/<hashed-session-dir>/cursors.json`: session time cursors
 
-Older top-level maintenance files such as `~/.xwave.registry` and `~/.xwave.lists` are read for one-time migration when the new JSON files are missing and a matching legacy registry record exists. New writes go only to `~/.xwave/`.
+New versions use only the `~/.xwave/` JSON directory layout; older top-level maintenance files are not part of the supported format.
 
 Source layout:
 

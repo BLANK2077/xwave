@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
+#include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -28,6 +29,19 @@ bool remove_file_if_exists(const std::string& path) {
     return access(path.c_str(), F_OK) != 0;
 }
 
+std::string session_dir_name(const std::string& session_id) {
+    // Keep socket paths short enough for sockaddr_un while preserving the
+    // original user-visible session id in registry/session JSON.
+    unsigned long long h = 1469598103934665603ULL;
+    for (unsigned char c : session_id) {
+        h ^= static_cast<unsigned long long>(c);
+        h *= 1099511628211ULL;
+    }
+    std::ostringstream oss;
+    oss << "s_" << std::hex << h;
+    return oss.str();
+}
+
 } // namespace
 
 std::string xwave_home_dir() {
@@ -39,7 +53,11 @@ std::string xwave_sessions_dir() {
 }
 
 std::string xwave_session_dir(int session_id) {
-    return xwave_sessions_dir() + "/" + std::to_string(session_id);
+    return xwave_session_dir(std::to_string(session_id));
+}
+
+std::string xwave_session_dir(const std::string& session_id) {
+    return xwave_sessions_dir() + "/" + session_dir_name(session_id);
 }
 
 std::string xwave_registry_path() {
@@ -51,34 +69,66 @@ std::string xwave_registry_lock_path() {
 }
 
 std::string xwave_session_json_path(int session_id) {
+    return xwave_session_json_path(std::to_string(session_id));
+}
+
+std::string xwave_session_json_path(const std::string& session_id) {
     return xwave_session_dir(session_id) + "/session.json";
 }
 
 std::string xwave_socket_path(int session_id) {
+    return xwave_socket_path(std::to_string(session_id));
+}
+
+std::string xwave_socket_path(const std::string& session_id) {
     return xwave_session_dir(session_id) + "/socket";
 }
 
 std::string xwave_debug_log_path(int session_id) {
+    return xwave_debug_log_path(std::to_string(session_id));
+}
+
+std::string xwave_debug_log_path(const std::string& session_id) {
     return xwave_session_dir(session_id) + "/debug.log";
 }
 
 std::string xwave_lists_path(int session_id) {
+    return xwave_lists_path(std::to_string(session_id));
+}
+
+std::string xwave_lists_path(const std::string& session_id) {
     return xwave_session_dir(session_id) + "/lists.json";
 }
 
 std::string xwave_apb_path(int session_id) {
+    return xwave_apb_path(std::to_string(session_id));
+}
+
+std::string xwave_apb_path(const std::string& session_id) {
     return xwave_session_dir(session_id) + "/apb.json";
 }
 
 std::string xwave_axi_path(int session_id) {
+    return xwave_axi_path(std::to_string(session_id));
+}
+
+std::string xwave_axi_path(const std::string& session_id) {
     return xwave_session_dir(session_id) + "/axi.json";
 }
 
 std::string xwave_events_path(int session_id) {
+    return xwave_events_path(std::to_string(session_id));
+}
+
+std::string xwave_events_path(const std::string& session_id) {
     return xwave_session_dir(session_id) + "/events.json";
 }
 
 std::string xwave_cursors_path(int session_id) {
+    return xwave_cursors_path(std::to_string(session_id));
+}
+
+std::string xwave_cursors_path(const std::string& session_id) {
     return xwave_session_dir(session_id) + "/cursors.json";
 }
 
@@ -107,10 +157,18 @@ bool xwave_ensure_home() {
 }
 
 bool xwave_ensure_session_dir(int session_id) {
+    return xwave_ensure_session_dir(std::to_string(session_id));
+}
+
+bool xwave_ensure_session_dir(const std::string& session_id) {
     return xwave_ensure_home() && ensure_dir(xwave_session_dir(session_id));
 }
 
 bool xwave_remove_session_dir(int session_id) {
+    return xwave_remove_session_dir(std::to_string(session_id));
+}
+
+bool xwave_remove_session_dir(const std::string& session_id) {
     std::string dir = xwave_session_dir(session_id);
     remove_file_if_exists(dir + "/session.json");
     remove_file_if_exists(dir + "/socket");

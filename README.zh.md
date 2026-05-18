@@ -17,14 +17,14 @@ tools/xwave-env <command> ...
 打开 FSDB：
 
 ```bash
-tools/xwave-env open /path/to/waves.fsdb
+tools/xwave-env open /path/to/waves.fsdb --name case_a
 ```
 
 输出示例：
 
 ```text
-[Session 1] Ready (FSDB: 0 ~ 200000)
-[Session 1] FSDB opened: /path/to/waves.fsdb
+[Session case_a] Ready (FSDB: 0 ~ 200000)
+[Session case_a] FSDB opened: /path/to/waves.fsdb
 ```
 
 查询信号值：
@@ -54,18 +54,26 @@ tools/xwave-env list diff -l if0 -b 0ns -e 100us
 结束后清理 Session：
 
 ```bash
-tools/xwave-env session kill 1
+tools/xwave-env session kill case_a
 ```
 
 ## 核心概念
 
 ### Session
 
-`open` 会规范化 FSDB 路径，并复用同一文件的健康 Session。每个 Session 拥有：
+`open` 必须显式指定 Session 名字：
+
+```bash
+tools/xwave-env open /path/to/waves.fsdb --name case_a
+```
+
+这个名字就是后续 `-s <name>` 和 AI `target.session_id` 使用的 Session ID。名字最长 256 字符，可包含字母、数字、`_`、`.`、`-`。若名字已存在，创建会失败并返回 `SESSION_ID_EXISTS`；请换一个名字或先 kill 旧 Session。
+
+`open` 会规范化 FSDB 路径，并创建一个命名 daemon Session。每个 Session 拥有：
 
 - 一个 FSDB 文件和一个 NPI 上下文
 - 一个 daemon 进程
-- 一个位于 `~/.xwave/sessions/<sid>/socket` 的 Unix domain socket
+- 一个位于 `~/.xwave/sessions/<hashed-session-dir>/socket` 的 Unix domain socket
 - 一条 `~/.xwave/registry.json` 记录
 
 Session 会记录 FSDB 的 mtime、size、device、inode。若 FSDB 被替换或更新，下一次访问会提示文件变化，并在保留 Session ID 和已加载配置的情况下重启 daemon。
@@ -76,7 +84,7 @@ Session 也有 idle timeout。默认 1800 秒，可通过 `XWAVE_IDLE_TIMEOUT_SE
 export XWAVE_IDLE_TIMEOUT_SEC=28800
 ```
 
-idle timeout 后 daemon 会退出并释放 FSDB/NPI 句柄。重新执行 `open <fsdb>` 会创建新的 Session；如果没有成功，请使用 `--debug` 查看具体失败阶段。
+idle timeout 后 daemon 会退出并释放 FSDB/NPI 句柄。重新执行 `open <fsdb> --name <new-name>` 会创建新的 Session；如果没有成功，请使用 `--debug` 查看具体失败阶段。
 
 ### TimeSpec 与游标
 
@@ -114,9 +122,9 @@ xwave Session 是本机资源。daemon 通过 Unix domain socket 连接，健康
 推荐方案：联系 IT 配置一个只包含一台合适机器的专用队列，给 xwave/xtrace 这类 NPI 工具使用。
 
 ```bash
-bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env open /path/to/waves.fsdb"
+bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env open /path/to/waves.fsdb --name case_a"
 bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env value top.clk 10ns -s 1"
-bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env session kill 1"
+bsub -q <xwave_queue> -I "cd <workdir> && tools/xwave-env session kill case_a"
 ```
 
 这台专用机器需要能访问共享 FSDB 路径，并拥有一致的 Verdi/NPI/license 环境。如果暂时没有单机专用队列，次选方案是 `bsub -m <host>`。如果固定机器仍不能接受，就需要做架构改造，例如 TCP daemon、远程转发，或无 daemon 的单次查询模式。
@@ -274,7 +282,7 @@ tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"session.
 Session 创建或重连失败时，使用 `--debug` 或 `XWAVE_DEBUG=1`。
 
 ```bash
-tools/xwave-env open /path/to/waves.fsdb --debug
+tools/xwave-env open /path/to/waves.fsdb --name case_a --debug
 tools/xwave-env session doctor -s 1 --debug
 tools/xwave-env session gc --debug
 ```
@@ -282,7 +290,7 @@ tools/xwave-env session gc --debug
 debug 输出写入 stderr。server 启动细节写入：
 
 ```text
-~/.xwave/sessions/<sid>/debug.log
+~/.xwave/sessions/<hashed-session-dir>/debug.log
 ```
 
 诊断信息会标出 FSDB stat、registry lock、fork/exec、`npi_init`、`npi_fsdb_open`、socket bind/listen、connect、PING、idle timeout 和 cleanup reason 等阶段。
@@ -300,7 +308,7 @@ debug 输出写入 stderr。server 启动细节写入：
 
 | 命令 | 说明 |
 |---|---|
-| `xwave open <fsdb-file> [--debug]` | 打开 FSDB，创建或复用 Session |
+| `xwave open <fsdb-file> --name <name> [--debug]` | 打开 FSDB，创建或复用 Session |
 | `xwave session list` | 列出活跃 Session |
 | `xwave session doctor -s <sid> [-json] [--debug]` | 诊断 Session |
 | `xwave session gc [--debug]` | 清理 stale/idle Session |
@@ -385,14 +393,14 @@ make clean && make
 
 - `~/.xwave/registry.json`：活跃 Session 记录
 - `~/.xwave/registry.lock`：registry 锁
-- `~/.xwave/sessions/<sid>/session.json`：单个 Session 元数据
-- `~/.xwave/sessions/<sid>/socket`：Session socket
-- `~/.xwave/sessions/<sid>/debug.log`：server debug log
-- `~/.xwave/sessions/<sid>/lists.json`：信号列表
-- `~/.xwave/sessions/<sid>/apb.json`：APB 配置
-- `~/.xwave/sessions/<sid>/axi.json`：AXI 配置
-- `~/.xwave/sessions/<sid>/events.json`：event 配置
-- `~/.xwave/sessions/<sid>/cursors.json`：Session 时间游标
+- `~/.xwave/sessions/<hashed-session-dir>/session.json`：单个 Session 元数据
+- `~/.xwave/sessions/<hashed-session-dir>/socket`：Session socket
+- `~/.xwave/sessions/<hashed-session-dir>/debug.log`：server debug log
+- `~/.xwave/sessions/<hashed-session-dir>/lists.json`：信号列表
+- `~/.xwave/sessions/<hashed-session-dir>/apb.json`：APB 配置
+- `~/.xwave/sessions/<hashed-session-dir>/axi.json`：AXI 配置
+- `~/.xwave/sessions/<hashed-session-dir>/events.json`：event 配置
+- `~/.xwave/sessions/<hashed-session-dir>/cursors.json`：Session 时间游标
 
 旧版顶层维护文件（例如 `~/.xwave.registry`、`~/.xwave.lists`）在新 JSON 文件不存在且存在匹配的旧 registry 记录时会被只读迁移。新版本只写入 `~/.xwave/` 目录。
 

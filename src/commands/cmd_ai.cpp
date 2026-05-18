@@ -11,6 +11,7 @@
 #include "../list/list_manager.h"
 #include "../protocol/protocol.h"
 #include "../session/session_manager.h"
+#include "../session/session_registry.h"
 
 #include <algorithm>
 #include <chrono>
@@ -209,24 +210,28 @@ static bool bool_or(const Json& obj, const char* key, bool def) {
     return it->get<bool>();
 }
 
-static int create_session_quiet(SessionManager& manager, const std::string& fsdb);
+static std::string create_session_quiet(SessionManager& manager, const std::string& fsdb, const std::string& name);
 
 static bool resolve_session(const Json& target,
                             bool allow_auto_open,
-                            int& session_id,
+                            std::string& session_id,
                             SessionInfo& info,
                             std::string& error) {
     SessionManager manager;
-    session_id = -1;
+    session_id.clear();
     auto sid_it = target.find("session_id");
-    if (sid_it != target.end() && sid_it->is_number_integer()) {
-        session_id = sid_it->get<int>();
+    if (sid_it != target.end()) {
+        if (!sid_it->is_string()) {
+            error = "target.session_id must be a string";
+            return false;
+        }
+        session_id = sid_it->get<std::string>();
         if (!manager.get_session(session_id, info)) {
-            error = "session not found: " + std::to_string(session_id);
+            error = "session not found: " + session_id;
             return false;
         }
         if (!manager.ensure_session_current(session_id) || !manager.get_session(session_id, info)) {
-            error = "session unavailable: " + std::to_string(session_id);
+            error = "session unavailable: " + session_id;
             return false;
         }
         return true;
@@ -239,8 +244,13 @@ static bool resolve_session(const Json& target,
             error = "target.fsdb requires auto_open=true when session_id is omitted";
             return false;
         }
-        session_id = create_session_quiet(manager, fsdb);
-        if (session_id <= 0 || !manager.get_session(session_id, info)) {
+        std::string name;
+        if (!get_string(target, "name", name)) {
+            error = "target.name is required when auto-opening an FSDB";
+            return false;
+        }
+        session_id = create_session_quiet(manager, fsdb, name);
+        if (session_id.empty() || !manager.get_session(session_id, info)) {
             error = "failed to open fsdb: " + fsdb;
             return false;
         }
@@ -259,7 +269,7 @@ static bool resolve_session(const Json& target,
     return true;
 }
 
-static int create_session_quiet(SessionManager& manager, const std::string& fsdb) {
+static std::string create_session_quiet(SessionManager& manager, const std::string& fsdb, const std::string& name) {
     fflush(stdout);
     int saved_stdout = dup(STDOUT_FILENO);
     int saved_stderr = dup(STDERR_FILENO);
@@ -273,7 +283,7 @@ static int create_session_quiet(SessionManager& manager, const std::string& fsdb
     if (saved_stderr >= 0 && devnull >= 0) {
         dup2(devnull, STDERR_FILENO);
     }
-    int sid = manager.create_session(fsdb);
+    std::string sid = manager.create_session(fsdb, name);
     fflush(stdout);
     fflush(stderr);
     if (saved_stdout >= 0) {
@@ -297,7 +307,7 @@ static void fill_session(Json& out, const SessionInfo& info) {
     };
 }
 
-static bool capture_server_json(int session_id,
+static bool capture_server_json(const std::string& session_id,
                                 const std::string& cmd,
                                 Json& data,
                                 std::string& error) {
@@ -318,7 +328,7 @@ static bool capture_server_json(int session_id,
     return true;
 }
 
-static bool capture_server_text(int session_id,
+static bool capture_server_text(const std::string& session_id,
                                 const std::string& cmd,
                                 std::string& payload,
                                 std::string& error) {
@@ -578,7 +588,7 @@ static std::string arg_text(const Json& v) {
     return v.dump();
 }
 
-static bool query_value(int session_id,
+static bool query_value(const std::string& session_id,
                         const std::string& signal,
                         const std::string& time,
                         char fmt,
@@ -588,7 +598,7 @@ static bool query_value(int session_id,
     return capture_server_text(session_id, cmd, raw, err);
 }
 
-static Json resolve_time_spec_json(int session_id,
+static Json resolve_time_spec_json(const std::string& session_id,
                                    const std::string& spec,
                                    bool allow_max,
                                    std::string& err) {
@@ -867,10 +877,21 @@ static int run_query(const Json& req, long long elapsed_ms) {
         if (!get_string(target, "fsdb", fsdb)) {
             return print_error_and_return(req, action, "MISSING_FIELD", "target.fsdb is required", elapsed_ms);
         }
+        std::string name;
+        if (!get_string(args, "name", name) && !get_string(target, "name", name)) {
+            return print_error_and_return(req, action, "MISSING_FIELD", "session.open requires args.name", elapsed_ms);
+        }
+        if (!SessionRegistry::is_valid_session_name(name)) {
+            return print_error_and_return(req, action, "INVALID_SESSION_ID", "invalid session name: " + name, elapsed_ms);
+        }
         SessionManager manager;
-        int sid = create_session_quiet(manager, fsdb);
+        SessionRegistry registry;
+        if (registry.exists(name)) {
+            return print_error_and_return(req, action, "SESSION_ID_EXISTS", "session id already exists: " + name, elapsed_ms);
+        }
+        std::string sid = create_session_quiet(manager, fsdb, name);
         SessionInfo info;
-        if (sid <= 0 || !manager.get_session(sid, info)) {
+        if (sid.empty() || !manager.get_session(sid, info)) {
             return print_error_and_return(req, action, "INVALID_TARGET", "failed to open fsdb: " + fsdb, elapsed_ms);
         }
         Json out = ok_out(&info);
@@ -906,8 +927,8 @@ static int run_query(const Json& req, long long elapsed_ms) {
         if (string_or(args, "id", "") == "all" || string_or(args, "session_id", "") == "all") {
             ok = manager.kill_all_sessions();
         } else {
-            int sid = int_or(target, "session_id", int_or(args, "session_id", int_or(args, "id", -1)));
-            if (sid <= 0) return print_error_and_return(req, action, "MISSING_FIELD", "session.kill requires target.session_id or args.id", elapsed_ms);
+            std::string sid = string_or(target, "session_id", string_or(args, "session_id", string_or(args, "id", "")));
+            if (sid.empty()) return print_error_and_return(req, action, "MISSING_FIELD", "session.kill requires target.session_id or args.id", elapsed_ms);
             ok = manager.kill_session(sid);
         }
         if (!ok) return print_error_and_return(req, action, "SESSION_UNHEALTHY", "failed to kill session", elapsed_ms);
@@ -918,8 +939,8 @@ static int run_query(const Json& req, long long elapsed_ms) {
     }
 
     if (action == "session.doctor") {
-        int sid = int_or(target, "session_id", int_or(args, "session_id", -1));
-        if (sid <= 0) return print_error_and_return(req, action, "MISSING_FIELD", "session.doctor requires session_id", elapsed_ms);
+        std::string sid = string_or(target, "session_id", string_or(args, "session_id", ""));
+        if (sid.empty()) return print_error_and_return(req, action, "MISSING_FIELD", "session.doctor requires session_id", elapsed_ms);
         SessionManager manager;
         SessionHealth h = manager.diagnose_session(sid);
         Json out = base_response(req, action, h.healthy, elapsed_ms);
@@ -933,7 +954,7 @@ static int run_query(const Json& req, long long elapsed_ms) {
         return h.healthy ? 0 : 1;
     }
 
-    int sid = -1;
+    std::string sid;
     SessionInfo info;
     std::string err;
     if (!resolve_session(target, true, sid, info, err)) {

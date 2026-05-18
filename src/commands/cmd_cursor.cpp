@@ -14,17 +14,17 @@ namespace xwave {
 
 using Json = nlohmann::ordered_json;
 
-static bool resolve_session_id(int explicit_sid, int& sid) {
+static bool resolve_session_id(const std::string& explicit_sid, std::string& sid) {
     SessionManager manager;
     SessionInfo info;
-    bool ok = explicit_sid > 0 ? manager.get_session(explicit_sid, info) : manager.get_latest_session(info);
+    bool ok = !explicit_sid.empty() ? manager.get_session(explicit_sid, info) : manager.get_latest_session(info);
     if (!ok) return false;
     if (!manager.ensure_session_current(info.session_id)) return false;
     sid = info.session_id;
     return true;
 }
 
-static bool send_ai_cursor_request(int session_id, const Json& req, Json& data, std::string& err) {
+static bool send_ai_cursor_request(const std::string& session_id, const Json& req, Json& data, std::string& err) {
     std::string raw;
     std::string cmd = std::string(CMD_AI_QUERY) + " " + req.dump();
     if (!send_command_capture(session_id, cmd.c_str(), raw)) {
@@ -65,17 +65,17 @@ int cmd_cursor(int argc, char** argv) {
     }
 
     std::string subcmd = argv[2];
-    int explicit_sid = -1;
+    std::string explicit_sid;
     bool json = false;
     std::string note;
 
     for (int i = 3; i < argc; ++i) {
-        if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) explicit_sid = atoi(argv[++i]);
+        if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) explicit_sid = argv[++i];
         else if (strcmp(argv[i], "-json") == 0) json = true;
         else if (strcmp(argv[i], "-note") == 0 && i + 1 < argc) note = argv[++i];
     }
 
-    int sid = -1;
+    std::string sid;
     if (!resolve_session_id(explicit_sid, sid)) {
         fprintf(stderr, "Error: No active sessions\n");
         return 1;

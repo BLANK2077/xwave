@@ -6,28 +6,30 @@
 #include "../list/list_manager.h"
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace xwave {
 
-static int resolve_session_id(int sid) {
+static bool resolve_session_id(const std::string& sid, std::string& out_sid) {
     SessionManager manager;
     SessionInfo info;
-    if (sid >= 0) {
-        if (!manager.get_session(sid, info)) return -1;
+    if (!sid.empty()) {
+        if (!manager.get_session(sid, info)) return false;
     } else if (!manager.get_latest_session(info)) {
-        return -1;
+        return false;
     }
-    if (!manager.ensure_session_current(info.session_id)) return -1;
-    return info.session_id;
+    if (!manager.ensure_session_current(info.session_id)) return false;
+    out_sid = info.session_id;
+    return true;
 }
 
-static bool resolve_list_name(ListManager& lm, int session_id, const char* explicit_name, std::string& out_name) {
+static bool resolve_list_name(ListManager& lm, const std::string& session_id, const char* explicit_name, std::string& out_name) {
     if (explicit_name) {
         out_name = explicit_name;
         return true;
     }
     if (!lm.get_latest_list(session_id, out_name)) {
-        fprintf(stderr, "Error: No lists found for session %d\n", session_id);
+        fprintf(stderr, "Error: No lists found for session %s\n", session_id.c_str());
         return false;
     }
     return true;
@@ -49,14 +51,13 @@ int cmd_list(int argc, char** argv) {
             print_help(argv[0]);
             return 1;
         }
-        int session_id = -1;
+        std::string session_id;
         for (int i = 4; i < argc; ++i) {
             if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
-                session_id = atoi(argv[++i]);
+                session_id = argv[++i];
             }
         }
-        session_id = resolve_session_id(session_id);
-        if (session_id < 0) {
+        if (!resolve_session_id(session_id, session_id)) {
             fprintf(stderr, "Error: No active sessions\n");
             return 1;
         }
@@ -65,20 +66,19 @@ int cmd_list(int argc, char** argv) {
             fprintf(stderr, "Error: Failed to create list '%s'\n", argv[3]);
             return 1;
         }
-        printf("List '%s' created for session %d.\n", argv[3], session_id);
+        printf("List '%s' created for session %s.\n", argv[3], session_id.c_str());
         return 0;
     }
 
     // --- list show [-s <sid>] [-l <name>] ---
     if (strcmp(subcmd, "show") == 0) {
-        int session_id = -1;
+        std::string session_id;
         const char* list_name = nullptr;
         for (int i = 3; i < argc; ++i) {
-            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
             else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc) list_name = argv[++i];
         }
-        session_id = resolve_session_id(session_id);
-        if (session_id < 0) {
+        if (!resolve_session_id(session_id, session_id)) {
             fprintf(stderr, "Error: No active sessions\n");
             return 1;
         }
@@ -104,11 +104,11 @@ int cmd_list(int argc, char** argv) {
             print_help(argv[0]);
             return 1;
         }
-        int session_id = -1;
+        std::string session_id;
         const char* list_name = nullptr;
         const char* signal = nullptr;
         for (int i = 3; i < argc; ++i) {
-            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
             else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc) list_name = argv[++i];
             else if (!signal && argv[i][0] != '-') signal = argv[i];
         }
@@ -116,8 +116,7 @@ int cmd_list(int argc, char** argv) {
             fprintf(stderr, "Error: Missing signal argument\n");
             return 1;
         }
-        session_id = resolve_session_id(session_id);
-        if (session_id < 0) {
+        if (!resolve_session_id(session_id, session_id)) {
             fprintf(stderr, "Error: No active sessions\n");
             return 1;
         }
@@ -140,16 +139,15 @@ int cmd_list(int argc, char** argv) {
 
     // --- list validate [-l <name>] [-json] [-s <sid>] ---
     if (strcmp(subcmd, "validate") == 0) {
-        int session_id = -1;
+        std::string session_id;
         const char* list_name = nullptr;
         bool json = false;
         for (int i = 3; i < argc; ++i) {
-            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
             else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc) list_name = argv[++i];
             else if (strcmp(argv[i], "-json") == 0) json = true;
         }
-        session_id = resolve_session_id(session_id);
-        if (session_id < 0) {
+        if (!resolve_session_id(session_id, session_id)) {
             fprintf(stderr, "Error: No active sessions\n");
             return 1;
         }
@@ -169,11 +167,11 @@ int cmd_list(int argc, char** argv) {
             print_help(argv[0]);
             return 1;
         }
-        int session_id = -1;
+        std::string session_id;
         const char* list_name = nullptr;
         const char* target = nullptr;
         for (int i = 3; i < argc; ++i) {
-            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
             else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc) list_name = argv[++i];
             else if (!target && argv[i][0] != '-') target = argv[i];
         }
@@ -181,8 +179,7 @@ int cmd_list(int argc, char** argv) {
             fprintf(stderr, "Error: Missing signal or index argument\n");
             return 1;
         }
-        session_id = resolve_session_id(session_id);
-        if (session_id < 0) {
+        if (!resolve_session_id(session_id, session_id)) {
             fprintf(stderr, "Error: No active sessions\n");
             return 1;
         }
@@ -206,7 +203,7 @@ int cmd_list(int argc, char** argv) {
             return 1;
         }
         const char* time_str = argv[3];
-        int session_id = -1;
+        std::string session_id;
         const char* list_name = nullptr;
         char fmt = 'H';
         bool json = false;
@@ -216,14 +213,13 @@ int cmd_list(int argc, char** argv) {
             start = 5;
         }
         for (int i = start; i < argc; ++i) {
-            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
             else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc) list_name = argv[++i];
             else if (strcmp(argv[i], "-b") == 0) fmt = 'B';
             else if (strcmp(argv[i], "-d") == 0) fmt = 'D';
             else if (strcmp(argv[i], "-json") == 0) json = true;
         }
-        session_id = resolve_session_id(session_id);
-        if (session_id < 0) {
+        if (!resolve_session_id(session_id, session_id)) {
             fprintf(stderr, "Error: No active sessions\n");
             return 1;
         }
@@ -241,18 +237,17 @@ int cmd_list(int argc, char** argv) {
 
     // --- list diff [-l <name>] [-b T] [-e T] [-s <sid>] ---
     if (strcmp(subcmd, "diff") == 0) {
-        int session_id = -1;
+        std::string session_id;
         const char* list_name = nullptr;
         const char* begin_time_str = nullptr;
         const char* end_time_str = nullptr;
         for (int i = 3; i < argc; ++i) {
-            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
             else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc) list_name = argv[++i];
             else if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) begin_time_str = argv[++i];
             else if (strcmp(argv[i], "-e") == 0 && i + 1 < argc) end_time_str = argv[++i];
         }
-        session_id = resolve_session_id(session_id);
-        if (session_id < 0) {
+        if (!resolve_session_id(session_id, session_id)) {
             fprintf(stderr, "Error: No active sessions\n");
             return 1;
         }

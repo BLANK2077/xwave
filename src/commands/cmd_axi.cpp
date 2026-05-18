@@ -14,25 +14,26 @@
 
 namespace xwave {
 
-static int resolve_session_id(int sid) {
+static bool resolve_session_id(const std::string& sid, std::string& out_sid) {
     SessionManager manager;
     SessionInfo info;
-    if (sid >= 0) {
-        if (!manager.get_session(sid, info)) return -1;
+    if (!sid.empty()) {
+        if (!manager.get_session(sid, info)) return false;
     } else if (!manager.get_latest_session(info)) {
-        return -1;
+        return false;
     }
-    if (!manager.ensure_session_current(info.session_id)) return -1;
-    return info.session_id;
+    if (!manager.ensure_session_current(info.session_id)) return false;
+    out_sid = info.session_id;
+    return true;
 }
 
-static bool resolve_axi_name(AxiManager& am, int session_id, const char* explicit_name, std::string& out_name) {
+static bool resolve_axi_name(AxiManager& am, const std::string& session_id, const char* explicit_name, std::string& out_name) {
     if (explicit_name) {
         out_name = explicit_name;
         return true;
     }
     if (!am.get_latest_axi(session_id, out_name)) {
-        fprintf(stderr, "Error: No AXI configs found for session %d\n", session_id);
+        fprintf(stderr, "Error: No AXI configs found for session %s\n", session_id.c_str());
         return false;
     }
     return true;
@@ -187,18 +188,17 @@ int cmd_axi(int argc, char** argv) {
         strcmp(subcmd_or_file, "osd") != 0 &&
         strcmp(subcmd_or_file, "list") != 0) {
         const char* json_file = subcmd_or_file;
-        int session_id = -1;
+        std::string session_id;
         const char* name = nullptr;
         for (int i = 3; i < argc; ++i) {
-            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
             else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) name = argv[++i];
         }
         if (!name) {
             fprintf(stderr, "Error: -n <name> is required for loading AXI config\n");
             return 1;
         }
-        session_id = resolve_session_id(session_id);
-        if (session_id < 0) {
+        if (!resolve_session_id(session_id, session_id)) {
             fprintf(stderr, "Error: No active sessions\n");
             return 1;
         }
@@ -210,20 +210,19 @@ int cmd_axi(int argc, char** argv) {
             fprintf(stderr, "Error: Failed to create AXI config '%s'\n", name);
             return 1;
         }
-        printf("AXI config '%s' loaded for session %d.\n", name, session_id);
+        printf("AXI config '%s' loaded for session %s.\n", name, session_id.c_str());
         return 0;
     }
 
     // --- list ---
     if (strcmp(subcmd_or_file, "list") == 0) {
-        int session_id = -1;
+        std::string session_id;
         const char* name = nullptr;
         for (int i = 3; i < argc; ++i) {
-            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
             else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) name = argv[++i];
         }
-        session_id = resolve_session_id(session_id);
-        if (session_id < 0) {
+        if (!resolve_session_id(session_id, session_id)) {
             fprintf(stderr, "Error: No active sessions\n");
             return 1;
         }
@@ -241,7 +240,7 @@ int cmd_axi(int argc, char** argv) {
 
     // Common query parsing
     const char* subcmd = subcmd_or_file;
-    int session_id = -1;
+    std::string session_id;
     const char* name = nullptr;
     const char* addr_str = nullptr;
     const char* id_str = nullptr;
@@ -253,7 +252,7 @@ int cmd_axi(int argc, char** argv) {
     bool filter_all = false;
 
     for (int i = 3; i < argc; ++i) {
-        if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+        if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
         else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) name = argv[++i];
         else if (strcmp(argv[i], "-addr") == 0 && i + 1 < argc) addr_str = argv[++i];
         else if (strcmp(argv[i], "-id") == 0 && i + 1 < argc) id_str = argv[++i];
@@ -265,8 +264,7 @@ int cmd_axi(int argc, char** argv) {
         else if (strcmp(argv[i], "-all") == 0) filter_all = true;
     }
 
-    session_id = resolve_session_id(session_id);
-    if (session_id < 0) {
+    if (!resolve_session_id(session_id, session_id)) {
         fprintf(stderr, "Error: No active sessions\n");
         return 1;
     }

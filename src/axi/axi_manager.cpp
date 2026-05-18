@@ -107,31 +107,13 @@ bool AxiManager::parse_legacy_line(const char* line, AxiConfig& config, int& ses
     return true;
 }
 
-bool AxiManager::migrate_legacy(int session_id, std::vector<AxiConfig>& configs) {
-    configs.clear();
-    if (!xwave_legacy_registry_has_session(session_id)) return false;
-
-    int fd = open(xwave_legacy_axi_path().c_str(), O_RDONLY);
-    if (fd < 0) return false;
-    FILE* fp = fdopen(fd, "r");
-    if (!fp) {
-        close(fd);
-        return false;
-    }
-    char line[65536];
-    while (fgets(line, sizeof(line), fp)) {
-        size_t len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
-        AxiConfig config;
-        int sid = 0;
-        if (parse_legacy_line(line, config, sid) && sid == session_id) configs.push_back(config);
-    }
-    fclose(fp);
-    if (!configs.empty()) save_session(session_id, configs);
-    return true;
+bool AxiManager::migrate_legacy(const std::string& session_id, std::vector<AxiConfig>& configs) {
+    (void)session_id;
+    (void)configs;
+    return false;
 }
 
-bool AxiManager::load_session(int session_id, std::vector<AxiConfig>& configs) {
+bool AxiManager::load_session(const std::string& session_id, std::vector<AxiConfig>& configs) {
     configs.clear();
     int fd = open(xwave_axi_path(session_id).c_str(), O_RDONLY);
     if (fd < 0) return migrate_legacy(session_id, configs);
@@ -163,7 +145,7 @@ bool AxiManager::load_session(int session_id, std::vector<AxiConfig>& configs) {
     return true;
 }
 
-bool AxiManager::save_session(int session_id, const std::vector<AxiConfig>& configs) {
+bool AxiManager::save_session(const std::string& session_id, const std::vector<AxiConfig>& configs) {
     if (!xwave_ensure_session_dir(session_id)) return false;
     int fd = open(xwave_axi_path(session_id).c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) return false;
@@ -182,7 +164,7 @@ bool AxiManager::save_session(int session_id, const std::vector<AxiConfig>& conf
     return ok;
 }
 
-bool AxiManager::create_axi(int session_id, const AxiConfig& config) {
+bool AxiManager::create_axi(const std::string& session_id, const AxiConfig& config) {
     std::vector<AxiConfig> configs;
     load_session(session_id, configs);
     for (const auto& c : configs) {
@@ -192,7 +174,7 @@ bool AxiManager::create_axi(int session_id, const AxiConfig& config) {
     return save_session(session_id, configs);
 }
 
-bool AxiManager::delete_axi(int session_id, const std::string& name) {
+bool AxiManager::delete_axi(const std::string& session_id, const std::string& name) {
     std::vector<AxiConfig> configs;
     load_session(session_id, configs);
     std::vector<AxiConfig> out;
@@ -207,7 +189,7 @@ bool AxiManager::delete_axi(int session_id, const std::string& name) {
     return found && save_session(session_id, out);
 }
 
-bool AxiManager::get_axi(int session_id, const std::string& name, AxiConfig& config) {
+bool AxiManager::get_axi(const std::string& session_id, const std::string& name, AxiConfig& config) {
     std::vector<AxiConfig> configs;
     load_session(session_id, configs);
     for (const auto& c : configs) {
@@ -219,7 +201,7 @@ bool AxiManager::get_axi(int session_id, const std::string& name, AxiConfig& con
     return false;
 }
 
-bool AxiManager::get_latest_axi(int session_id, std::string& name) {
+bool AxiManager::get_latest_axi(const std::string& session_id, std::string& name) {
     std::vector<AxiConfig> configs;
     load_session(session_id, configs);
     if (configs.empty()) return false;
@@ -227,7 +209,7 @@ bool AxiManager::get_latest_axi(int session_id, std::string& name) {
     return true;
 }
 
-std::vector<AxiConfig> AxiManager::list_all(int session_id) {
+std::vector<AxiConfig> AxiManager::list_all(const std::string& session_id) {
     std::vector<AxiConfig> configs;
     load_session(session_id, configs);
     return configs;

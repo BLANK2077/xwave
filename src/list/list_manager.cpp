@@ -71,34 +71,13 @@ bool ListManager::parse_legacy_line(const char* line, SignalList& list, int& ses
     return true;
 }
 
-bool ListManager::migrate_legacy(int session_id, std::vector<SignalList>& lists) {
-    lists.clear();
-    if (!xwave_legacy_registry_has_session(session_id)) return false;
-
-    std::string legacy_path = xwave_legacy_lists_path();
-    int fd = open(legacy_path.c_str(), O_RDONLY);
-    if (fd < 0) return false;
-
-    FILE* fp = fdopen(fd, "r");
-    if (!fp) {
-        close(fd);
-        return false;
-    }
-
-    char line[4096];
-    while (fgets(line, sizeof(line), fp)) {
-        size_t len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
-        SignalList list;
-        int sid = 0;
-        if (parse_legacy_line(line, list, sid) && sid == session_id) lists.push_back(list);
-    }
-    fclose(fp);
-    if (!lists.empty()) save_session(session_id, lists);
-    return true;
+bool ListManager::migrate_legacy(const std::string& session_id, std::vector<SignalList>& lists) {
+    (void)session_id;
+    (void)lists;
+    return false;
 }
 
-bool ListManager::load_session(int session_id, std::vector<SignalList>& lists) {
+bool ListManager::load_session(const std::string& session_id, std::vector<SignalList>& lists) {
     lists.clear();
     std::string path = xwave_lists_path(session_id);
     int fd = open(path.c_str(), O_RDONLY);
@@ -134,7 +113,7 @@ bool ListManager::load_session(int session_id, std::vector<SignalList>& lists) {
     return true;
 }
 
-bool ListManager::save_session(int session_id, const std::vector<SignalList>& lists) {
+bool ListManager::save_session(const std::string& session_id, const std::vector<SignalList>& lists) {
     if (!xwave_ensure_session_dir(session_id)) return false;
     std::string path = xwave_lists_path(session_id);
     int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -154,7 +133,7 @@ bool ListManager::save_session(int session_id, const std::vector<SignalList>& li
     return ok;
 }
 
-bool ListManager::create_list(int session_id, const std::string& name) {
+bool ListManager::create_list(const std::string& session_id, const std::string& name) {
     std::vector<SignalList> lists;
     load_session(session_id, lists);
     for (const auto& list : lists) {
@@ -166,7 +145,7 @@ bool ListManager::create_list(int session_id, const std::string& name) {
     return save_session(session_id, lists);
 }
 
-bool ListManager::delete_list(int session_id, const std::string& name) {
+bool ListManager::delete_list(const std::string& session_id, const std::string& name) {
     std::vector<SignalList> lists;
     load_session(session_id, lists);
     std::vector<SignalList> out;
@@ -181,7 +160,7 @@ bool ListManager::delete_list(int session_id, const std::string& name) {
     return found && save_session(session_id, out);
 }
 
-bool ListManager::add_signal(int session_id, const std::string& list_name, const std::string& signal) {
+bool ListManager::add_signal(const std::string& session_id, const std::string& list_name, const std::string& signal) {
     std::vector<SignalList> lists;
     load_session(session_id, lists);
     for (size_t i = 0; i < lists.size(); ++i) {
@@ -196,7 +175,7 @@ bool ListManager::add_signal(int session_id, const std::string& list_name, const
     return false;
 }
 
-bool ListManager::del_signal(int session_id, const std::string& list_name, const std::string& path_or_index) {
+bool ListManager::del_signal(const std::string& session_id, const std::string& list_name, const std::string& path_or_index) {
     std::vector<SignalList> lists;
     load_session(session_id, lists);
     for (size_t i = 0; i < lists.size(); ++i) {
@@ -231,7 +210,7 @@ bool ListManager::del_signal(int session_id, const std::string& list_name, const
     return false;
 }
 
-bool ListManager::get_list(int session_id, const std::string& name, SignalList& list) {
+bool ListManager::get_list(const std::string& session_id, const std::string& name, SignalList& list) {
     std::vector<SignalList> lists;
     load_session(session_id, lists);
     for (const auto& candidate : lists) {
@@ -243,7 +222,7 @@ bool ListManager::get_list(int session_id, const std::string& name, SignalList& 
     return false;
 }
 
-bool ListManager::get_latest_list(int session_id, std::string& name) {
+bool ListManager::get_latest_list(const std::string& session_id, std::string& name) {
     std::vector<SignalList> lists;
     load_session(session_id, lists);
     if (lists.empty()) return false;
@@ -251,7 +230,7 @@ bool ListManager::get_latest_list(int session_id, std::string& name) {
     return true;
 }
 
-std::vector<SignalList> ListManager::list_all(int session_id) {
+std::vector<SignalList> ListManager::list_all(const std::string& session_id) {
     std::vector<SignalList> lists;
     load_session(session_id, lists);
     return lists;

@@ -49,7 +49,7 @@ namespace xwave {
 using Json = nlohmann::ordered_json;
 
 // Global for cleanup
-static int g_session_id = 0;
+static std::string g_session_id;
 static int g_srv_fd = -1;
 static char g_sock_path[SOCK_PATH_LEN];
 static npiFsdbFileHandle g_fsdb_file = nullptr;
@@ -70,14 +70,14 @@ static bool server_debug_enabled() {
 }
 
 static void server_debug_open_log() {
-    if (!server_debug_enabled() || g_session_id <= 0) return;
+    if (!server_debug_enabled() || g_session_id.empty()) return;
     char log_path[SOCK_PATH_LEN];
     get_debug_log_path(log_path, g_session_id);
     g_debug_log = fopen(log_path, "a");
     if (g_debug_log) {
         time_t now = time(nullptr);
-        fprintf(g_debug_log, "=== xwave server debug session=%d time=%ld ===\n",
-                g_session_id, static_cast<long>(now));
+        fprintf(g_debug_log, "=== xwave server debug session=%s time=%ld ===\n",
+                g_session_id.c_str(), static_cast<long>(now));
         fflush(g_debug_log);
     }
 }
@@ -105,7 +105,7 @@ static void cleanup_and_exit(int sig) {
         npi_fsdb_close(g_fsdb_file);
         g_fsdb_file = nullptr;
     }
-    if (g_session_id > 0) {
+    if (!g_session_id.empty()) {
         SessionRegistry registry;
         registry.remove(g_session_id);
     }
@@ -302,7 +302,7 @@ static bool parse_user_time(const char* text,
     return true;
 }
 
-static bool read_list_from_storage(int session_id, const char* list_name, SignalList& out_list) {
+static bool read_list_from_storage(const std::string& session_id, const char* list_name, SignalList& out_list) {
     ListManager lm;
     return lm.get_list(session_id, list_name, out_list);
 }
@@ -523,12 +523,12 @@ static void handle_scope(int client_fd, const char* scope_path, bool recursive, 
 }
 
 // Helper: read an APB config from the registry file by session_id and name
-static bool read_apb_from_registry(int session_id, const char* name, xwave::ApbConfig& out_config) {
+static bool read_apb_from_registry(const std::string& session_id, const char* name, xwave::ApbConfig& out_config) {
     xwave::ApbManager am;
     return am.get_apb(session_id, name, out_config);
 }
 
-static bool read_axi_from_registry(int session_id, const char* name, xwave::AxiConfig& out_config) {
+static bool read_axi_from_registry(const std::string& session_id, const char* name, xwave::AxiConfig& out_config) {
     xwave::AxiManager am;
     return am.get_axi(session_id, name, out_config);
 }
@@ -2782,13 +2782,13 @@ int server_main(int argc, char** argv) {
     int arg_idx = 1;
 
     // Parse session ID
-    g_session_id = atoi(argv[arg_idx]);
-    if (g_session_id <= 0) {
+    g_session_id = argv[arg_idx];
+    if (!SessionRegistry::is_valid_session_name(g_session_id)) {
         fprintf(stderr, "Invalid session ID: %s\n", argv[arg_idx]);
         return 1;
     }
     server_debug_open_log();
-    server_debug_log("server_main: parsed_session_id=%d", g_session_id);
+    server_debug_log("server_main: parsed_session_id=%s", g_session_id.c_str());
     arg_idx++;
 
     // Parse FSDB file
@@ -2808,7 +2808,7 @@ int server_main(int argc, char** argv) {
     int result = npi_init(npi_argc, npi_argv);
     if (result == 0) {
         server_debug_log("server_main: npi_init_failed");
-        dprintf(stdout_copy, "[Session %d] ERROR: npi_init failed\n", g_session_id);
+        dprintf(stdout_copy, "[Session %s] ERROR: npi_init failed\n", g_session_id.c_str());
         close(stdout_copy);
         if (g_debug_log) {
             fclose(g_debug_log);
@@ -2822,7 +2822,7 @@ int server_main(int argc, char** argv) {
     g_fsdb_file = npi_fsdb_open(fsdb_file);
     if (!g_fsdb_file) {
         server_debug_log("server_main: npi_fsdb_open_failed fsdb=%s", fsdb_file);
-        dprintf(stdout_copy, "[Session %d] ERROR: npi_fsdb_open failed: %s\n", g_session_id, fsdb_file);
+        dprintf(stdout_copy, "[Session %s] ERROR: npi_fsdb_open failed: %s\n", g_session_id.c_str(), fsdb_file);
         npi_end();
         close(stdout_copy);
         if (g_debug_log) {
@@ -2838,7 +2838,7 @@ int server_main(int argc, char** argv) {
     npi_fsdb_max_time(g_fsdb_file, &maxTime);
     server_debug_log("server_main: fsdb_time min=%llu max=%llu", minTime, maxTime);
 
-    dprintf(stdout_copy, "[Session %d] Ready (FSDB: %llu ~ %llu)\n", g_session_id, minTime, maxTime);
+    dprintf(stdout_copy, "[Session %s] Ready (FSDB: %llu ~ %llu)\n", g_session_id.c_str(), minTime, maxTime);
     fflush(stdout);
     close(stdout_copy);
 

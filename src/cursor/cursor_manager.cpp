@@ -40,7 +40,7 @@ bool json_to_cursor(const Json& j, Cursor& c) {
     return !c.name.empty();
 }
 
-bool load_store(int session_id, Json& root) {
+bool load_store(const std::string& session_id, Json& root) {
     root = Json::object();
     root["version"] = 1;
     root["active_cursor"] = "";
@@ -68,7 +68,7 @@ bool load_store(int session_id, Json& root) {
     return true;
 }
 
-bool save_store(int session_id, const Json& root) {
+bool save_store(const std::string& session_id, const Json& root) {
     if (!xwave_ensure_session_dir(session_id)) return false;
     std::string path = xwave_cursors_path(session_id);
     int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -89,7 +89,7 @@ bool valid_cursor_name(const std::string& name) {
 
 } // namespace
 
-bool CursorManager::set_cursor(int session_id, const Cursor& cursor, bool make_active) {
+bool CursorManager::set_cursor(const std::string& session_id, const Cursor& cursor, bool make_active) {
     if (!valid_cursor_name(cursor.name)) return false;
     Json root;
     if (!load_store(session_id, root)) return false;
@@ -115,7 +115,7 @@ bool CursorManager::set_cursor(int session_id, const Cursor& cursor, bool make_a
     return save_store(session_id, root);
 }
 
-bool CursorManager::get_cursor(int session_id, const std::string& name, Cursor& cursor) const {
+bool CursorManager::get_cursor(const std::string& session_id, const std::string& name, Cursor& cursor) const {
     Json root;
     if (!load_store(session_id, root)) return false;
     for (const auto& item : root["cursors"]) {
@@ -128,7 +128,7 @@ bool CursorManager::get_cursor(int session_id, const std::string& name, Cursor& 
     return false;
 }
 
-bool CursorManager::delete_cursor(int session_id, const std::string& name) {
+bool CursorManager::delete_cursor(const std::string& session_id, const std::string& name) {
     Json root;
     if (!load_store(session_id, root)) return false;
     Json kept = Json::array();
@@ -147,7 +147,7 @@ bool CursorManager::delete_cursor(int session_id, const std::string& name) {
     return save_store(session_id, root);
 }
 
-bool CursorManager::use_cursor(int session_id, const std::string& name) {
+bool CursorManager::use_cursor(const std::string& session_id, const std::string& name) {
     Cursor c;
     if (!get_cursor(session_id, name, c)) return false;
     Json root;
@@ -156,14 +156,14 @@ bool CursorManager::use_cursor(int session_id, const std::string& name) {
     return save_store(session_id, root);
 }
 
-bool CursorManager::get_active_cursor(int session_id, std::string& name) const {
+bool CursorManager::get_active_cursor(const std::string& session_id, std::string& name) const {
     Json root;
     if (!load_store(session_id, root)) return false;
     name = root.value("active_cursor", std::string());
     return !name.empty();
 }
 
-std::vector<Cursor> CursorManager::list_cursors(int session_id) const {
+std::vector<Cursor> CursorManager::list_cursors(const std::string& session_id) const {
     Json root;
     std::vector<Cursor> out;
     if (!load_store(session_id, root)) return out;

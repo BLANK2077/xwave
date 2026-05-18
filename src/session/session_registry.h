@@ -9,7 +9,7 @@ namespace xwave {
 
 // Session information structure
 struct SessionInfo {
-    int session_id;             // Unique session ID
+    std::string session_id;         // Unique session name
     std::string socket_path;    // Unix domain socket path
     std::string fsdb_file;      // FSDB file opened
     pid_t server_pid;           // Server process ID
@@ -21,7 +21,7 @@ struct SessionInfo {
     unsigned long long fsdb_inode;  // FSDB inode
 
     SessionInfo()
-        : session_id(0),
+        : session_id(),
           server_pid(0),
           created_at(0),
           last_active(0),
@@ -46,20 +46,24 @@ public:
     // Replace or add a session record
     bool upsert(const SessionInfo& session);
 
+    bool exists(const std::string& session_id);
+
+    static bool is_valid_session_name(const std::string& name);
+
     // Update last active timestamp
-    bool touch(int session_id, time_t last_active);
+    bool touch(const std::string& session_id, time_t last_active);
+    bool touch(int session_id, time_t last_active) { return touch(std::to_string(session_id), last_active); }
 
     // Remove a session from registry
-    bool remove(int session_id);
+    bool remove(const std::string& session_id);
+    bool remove(int session_id) { return remove(std::to_string(session_id)); }
 
     // Get session by ID
-    bool get(int session_id, SessionInfo& session);
+    bool get(const std::string& session_id, SessionInfo& session);
+    bool get(int session_id, SessionInfo& session) { return get(std::to_string(session_id), session); }
 
     // Get the latest session (highest ID)
     bool get_latest(SessionInfo& session);
-
-    // Get next available session ID
-    int get_next_id();
 
     // Clean up stale sessions (dead processes)
     bool cleanup_stale();

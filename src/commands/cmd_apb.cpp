@@ -14,25 +14,26 @@
 
 namespace xwave {
 
-static int resolve_session_id(int sid) {
+static bool resolve_session_id(const std::string& sid, std::string& out_sid) {
     SessionManager manager;
     SessionInfo info;
-    if (sid >= 0) {
-        if (!manager.get_session(sid, info)) return -1;
+    if (!sid.empty()) {
+        if (!manager.get_session(sid, info)) return false;
     } else if (!manager.get_latest_session(info)) {
-        return -1;
+        return false;
     }
-    if (!manager.ensure_session_current(info.session_id)) return -1;
-    return info.session_id;
+    if (!manager.ensure_session_current(info.session_id)) return false;
+    out_sid = info.session_id;
+    return true;
 }
 
-static bool resolve_apb_name(ApbManager& am, int session_id, const char* explicit_name, std::string& out_name) {
+static bool resolve_apb_name(ApbManager& am, const std::string& session_id, const char* explicit_name, std::string& out_name) {
     if (explicit_name) {
         out_name = explicit_name;
         return true;
     }
     if (!am.get_latest_apb(session_id, out_name)) {
-        fprintf(stderr, "Error: No APB configs found for session %d\n", session_id);
+        fprintf(stderr, "Error: No APB configs found for session %s\n", session_id.c_str());
         return false;
     }
     return true;
@@ -129,18 +130,17 @@ int cmd_apb(int argc, char** argv) {
         strcmp(subcmd_or_file, "last") != 0 &&
         strcmp(subcmd_or_file, "list") != 0) {
         const char* json_file = subcmd_or_file;
-        int session_id = -1;
+        std::string session_id;
         const char* name = nullptr;
         for (int i = 3; i < argc; ++i) {
-            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
             else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) name = argv[++i];
         }
         if (!name) {
             fprintf(stderr, "Error: -n <name> is required for loading APB config\n");
             return 1;
         }
-        session_id = resolve_session_id(session_id);
-        if (session_id < 0) {
+        if (!resolve_session_id(session_id, session_id)) {
             fprintf(stderr, "Error: No active sessions\n");
             return 1;
         }
@@ -152,20 +152,19 @@ int cmd_apb(int argc, char** argv) {
             fprintf(stderr, "Error: Failed to create APB config '%s'\n", name);
             return 1;
         }
-        printf("APB config '%s' loaded for session %d.\n", name, session_id);
+        printf("APB config '%s' loaded for session %s.\n", name, session_id.c_str());
         return 0;
     }
 
     // --- list ---
     if (strcmp(subcmd_or_file, "list") == 0) {
-        int session_id = -1;
+        std::string session_id;
         const char* name = nullptr;
         for (int i = 3; i < argc; ++i) {
-            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+            if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
             else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) name = argv[++i];
         }
-        session_id = resolve_session_id(session_id);
-        if (session_id < 0) {
+        if (!resolve_session_id(session_id, session_id)) {
             fprintf(stderr, "Error: No active sessions\n");
             return 1;
         }
@@ -183,7 +182,7 @@ int cmd_apb(int argc, char** argv) {
 
     // Common query parsing
     const char* subcmd = subcmd_or_file;
-    int session_id = -1;
+    std::string session_id;
     const char* name = nullptr;
     const char* addr_str = nullptr;
     int num_val = -1;
@@ -193,7 +192,7 @@ int cmd_apb(int argc, char** argv) {
     bool filter_wr = false;
 
     for (int i = 3; i < argc; ++i) {
-        if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+        if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
         else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) name = argv[++i];
         else if (strcmp(argv[i], "-addr") == 0 && i + 1 < argc) addr_str = argv[++i];
         else if (strcmp(argv[i], "-num") == 0 && i + 1 < argc) num_val = atoi(argv[++i]);
@@ -203,8 +202,7 @@ int cmd_apb(int argc, char** argv) {
         else if (strcmp(argv[i], "-wr") == 0) filter_wr = true;
     }
 
-    session_id = resolve_session_id(session_id);
-    if (session_id < 0) {
+    if (!resolve_session_id(session_id, session_id)) {
         fprintf(stderr, "Error: No active sessions\n");
         return 1;
     }

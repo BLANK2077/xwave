@@ -77,31 +77,13 @@ bool ApbManager::parse_legacy_line(const char* line, ApbConfig& config, int& ses
     return true;
 }
 
-bool ApbManager::migrate_legacy(int session_id, std::vector<ApbConfig>& configs) {
-    configs.clear();
-    if (!xwave_legacy_registry_has_session(session_id)) return false;
-
-    int fd = open(xwave_legacy_apb_path().c_str(), O_RDONLY);
-    if (fd < 0) return false;
-    FILE* fp = fdopen(fd, "r");
-    if (!fp) {
-        close(fd);
-        return false;
-    }
-    char line[4096];
-    while (fgets(line, sizeof(line), fp)) {
-        size_t len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
-        ApbConfig config;
-        int sid = 0;
-        if (parse_legacy_line(line, config, sid) && sid == session_id) configs.push_back(config);
-    }
-    fclose(fp);
-    if (!configs.empty()) save_session(session_id, configs);
-    return true;
+bool ApbManager::migrate_legacy(const std::string& session_id, std::vector<ApbConfig>& configs) {
+    (void)session_id;
+    (void)configs;
+    return false;
 }
 
-bool ApbManager::load_session(int session_id, std::vector<ApbConfig>& configs) {
+bool ApbManager::load_session(const std::string& session_id, std::vector<ApbConfig>& configs) {
     configs.clear();
     int fd = open(xwave_apb_path(session_id).c_str(), O_RDONLY);
     if (fd < 0) return migrate_legacy(session_id, configs);
@@ -133,7 +115,7 @@ bool ApbManager::load_session(int session_id, std::vector<ApbConfig>& configs) {
     return true;
 }
 
-bool ApbManager::save_session(int session_id, const std::vector<ApbConfig>& configs) {
+bool ApbManager::save_session(const std::string& session_id, const std::vector<ApbConfig>& configs) {
     if (!xwave_ensure_session_dir(session_id)) return false;
     int fd = open(xwave_apb_path(session_id).c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) return false;
@@ -152,7 +134,7 @@ bool ApbManager::save_session(int session_id, const std::vector<ApbConfig>& conf
     return ok;
 }
 
-bool ApbManager::create_apb(int session_id, const ApbConfig& config) {
+bool ApbManager::create_apb(const std::string& session_id, const ApbConfig& config) {
     std::vector<ApbConfig> configs;
     load_session(session_id, configs);
     for (const auto& c : configs) {
@@ -162,7 +144,7 @@ bool ApbManager::create_apb(int session_id, const ApbConfig& config) {
     return save_session(session_id, configs);
 }
 
-bool ApbManager::delete_apb(int session_id, const std::string& name) {
+bool ApbManager::delete_apb(const std::string& session_id, const std::string& name) {
     std::vector<ApbConfig> configs;
     load_session(session_id, configs);
     std::vector<ApbConfig> out;
@@ -177,7 +159,7 @@ bool ApbManager::delete_apb(int session_id, const std::string& name) {
     return found && save_session(session_id, out);
 }
 
-bool ApbManager::get_apb(int session_id, const std::string& name, ApbConfig& config) {
+bool ApbManager::get_apb(const std::string& session_id, const std::string& name, ApbConfig& config) {
     std::vector<ApbConfig> configs;
     load_session(session_id, configs);
     for (const auto& c : configs) {
@@ -189,7 +171,7 @@ bool ApbManager::get_apb(int session_id, const std::string& name, ApbConfig& con
     return false;
 }
 
-bool ApbManager::get_latest_apb(int session_id, std::string& name) {
+bool ApbManager::get_latest_apb(const std::string& session_id, std::string& name) {
     std::vector<ApbConfig> configs;
     load_session(session_id, configs);
     if (configs.empty()) return false;
@@ -197,7 +179,7 @@ bool ApbManager::get_latest_apb(int session_id, std::string& name) {
     return true;
 }
 
-std::vector<ApbConfig> ApbManager::list_all(int session_id) {
+std::vector<ApbConfig> ApbManager::list_all(const std::string& session_id) {
     std::vector<ApbConfig> configs;
     load_session(session_id, configs);
     return configs;

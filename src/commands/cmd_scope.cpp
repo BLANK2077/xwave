@@ -11,13 +11,14 @@
 
 namespace xwave {
 
-static int resolve_session_id(int sid) {
+static bool resolve_session_id(const std::string& sid, std::string& out_sid) {
     SessionManager manager;
     SessionInfo info;
-    bool ok = sid >= 0 ? manager.get_session(sid, info) : manager.get_latest_session(info);
-    if (!ok) return -1;
-    if (!manager.ensure_session_current(info.session_id)) return -1;
-    return info.session_id;
+    bool ok = !sid.empty() ? manager.get_session(sid, info) : manager.get_latest_session(info);
+    if (!ok) return false;
+    if (!manager.ensure_session_current(info.session_id)) return false;
+    out_sid = info.session_id;
+    return true;
 }
 
 int cmd_scope(int argc, char** argv) {
@@ -28,11 +29,11 @@ int cmd_scope(int argc, char** argv) {
     }
 
     const char* scope_path = argv[2];
-    int session_id = -1;
+    std::string session_id;
     bool recursive = false;
     bool json = false;
     for (int i = 3; i < argc; ++i) {
-        if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = atoi(argv[++i]);
+        if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) session_id = argv[++i];
         else if (strcmp(argv[i], "-recursive") == 0) recursive = true;
         else if (strcmp(argv[i], "-json") == 0) json = true;
         else {
@@ -41,8 +42,7 @@ int cmd_scope(int argc, char** argv) {
         }
     }
 
-    session_id = resolve_session_id(session_id);
-    if (session_id < 0) {
+    if (!resolve_session_id(session_id, session_id)) {
         fprintf(stderr, "Error: No active sessions\n");
         return 1;
     }
