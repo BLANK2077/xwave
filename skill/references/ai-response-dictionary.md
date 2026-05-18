@@ -2,15 +2,19 @@
 
 This reference collects the response fields an AI agent should expect when using `xwave ai query`. Keep the main `SKILL.md` focused on request examples and workflow; update this file when action-specific response fields change.
 
-## Stability Rule
+## Verbosity Rule
 
-The top-level envelope is the stable contract across all actions:
+`xwave ai query` defaults to `output.verbosity:"compact"`. In compact mode, only key fields are returned; `session`, `tool`, empty `warnings`, empty `suggested_next_actions`, and `meta.elapsed_ms` are intentionally omitted.
+
+Use `output.verbosity:"full"` to get the full compatibility envelope, or `output.verbosity:"debug"` for session/daemon/socket diagnostics.
+
+The full/debug top-level envelope is:
 
 ```text
 ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta
 ```
 
-Fields inside `summary`, `data`, and `findings` are action-specific. Treat this file as a practical dictionary, not a replacement for inspecting real output from the target xwave build and FSDB.
+Compact mode normally contains `ok/action` plus non-empty `summary`, `data`, `findings`, `error`, non-empty `suggested_next_actions`, and `meta.truncated` when true. Fields inside `summary`, `data`, and `findings` are action-specific. Treat this file as a practical dictionary, not a replacement for inspecting real output from the target xwave build and FSDB.
 
 Recommended pattern:
 
@@ -32,14 +36,14 @@ tools/xwave-env ai query --json '<request>' \
 | --- | --- | --- |
 | `ok` | Boolean success flag. | Check this before reading action data. |
 | `action` | Echoed action name. | Verify the response matches the requested action. |
-| `session` | Session metadata when relevant. | Capture `id`, `fsdb`, `reused`, or restart information for follow-up requests. |
+| `session` | Session metadata in full/debug, or compact failure diagnostics when relevant. | Do not assume this exists in compact success responses. Use `target.session_id` from your own request state. |
 | `summary` | Compact action-specific summary. | Good for quick decisions and user-facing summaries. |
 | `data` | Action-specific structured payload. | Use for evidence extraction and statistics. |
 | `findings` | List of detected issues or facts. | Use for anomaly/protocol/debug conclusions. |
-| `suggested_next_actions` | Machine-readable recovery or follow-up hints. | Prefer these over inventing recovery steps. |
-| `warnings` | Non-fatal warnings. | Preserve in debug reports. |
+| `suggested_next_actions` | Machine-readable recovery or follow-up hints. | Present only when non-empty in compact mode. Prefer these over inventing recovery steps. |
+| `warnings` | Non-fatal warnings. | Present only when non-empty in compact mode. Preserve in debug reports. |
 | `error` | Structured error object or null. | Read `error.code` and `recoverable`; do not parse stderr. |
-| `meta` | Execution metadata. | Check `elapsed_ms`, `truncated`, and limit-related signals. |
+| `meta` | Execution metadata. | In compact mode, expect only `truncated:true` when relevant. Use full/debug for `elapsed_ms`. |
 
 ## Common Nested Objects
 

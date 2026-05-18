@@ -83,7 +83,7 @@ tools/xwave-env ai actions
 }
 ```
 
-响应 envelope 固定包含 `ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta`。已实现 action 覆盖 `session/cursor/scope/value/list/apb/axi/event` 主要能力，并支持 `verify.conditions`、`expr.eval_at`、`window.verify`、`signal.changes`、`signal.stability`、`signal.trend`、`inspect_signal`、`detect_anomaly`、`handshake.inspect`、`axi.channel_stall`、`axi.outstanding_timeline`、`axi.request_response_pair`、`axi.latency_outlier`、`apb.transfer_window`。
+AI JSON 默认 `output.verbosity:"compact"`，只返回关键字段；需要完整 `ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta` envelope 时指定 `output.verbosity:"full"`，排查 daemon/session 时用 `debug`。已实现 action 覆盖 `session/cursor/scope/value/list/apb/axi/event` 主要能力，并支持 `verify.conditions`、`expr.eval_at`、`window.verify`、`signal.changes`、`signal.stability`、`signal.trend`、`inspect_signal`、`detect_anomaly`、`handshake.inspect`、`axi.channel_stall`、`axi.outstanding_timeline`、`axi.request_response_pair`、`axi.latency_outlier`、`apb.transfer_window`。
 
 常用 AI action 参数：
 - `cursor.set/get/list/use/delete`：`name`、`time/at`、`note`；后续 time 字段可用 `@name`、`@name-20ns`、`@name-10cycle(clk)`、`@+5ns`。

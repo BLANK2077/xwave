@@ -268,15 +268,21 @@ tools/xwave-env ai actions
     "max_events": 1000,
     "max_samples": 1000000
   },
-  "output": {}
+  "output": {
+    "verbosity": "compact"
+  }
 }
 ```
 
-响应 envelope：
+重要：AI JSON 默认是 compact 精简输出。compact 会主动省略 `tool`、`session`、空 `warnings`、空 `suggested_next_actions` 和 `meta.elapsed_ms`。需要更多信息时使用 `output.verbosity`：
 
-```text
-ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta
+```json
+{"output":{"verbosity":"compact"}}
+{"output":{"verbosity":"full"}}
+{"output":{"verbosity":"debug"}}
 ```
+
+`compact` 适合常规 AI 工作流；`full` 返回完整兼容 envelope；`debug` 保留 session/socket/PID/fingerprint 等 daemon 或环境排障信息。错误响应始终保留结构化 `error.code/message`，非空恢复建议也会保留。
 
 脚本里应解析 JSON，而不是解析人类文本：
 

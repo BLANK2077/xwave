@@ -268,15 +268,21 @@ Request envelope:
     "max_events": 1000,
     "max_samples": 1000000
   },
-  "output": {}
+  "output": {
+    "verbosity": "compact"
+  }
 }
 ```
 
-Response envelope:
+Important: AI JSON responses are compact by default. Compact output intentionally omits `tool`, `session`, empty `warnings`, empty `suggested_next_actions`, and `meta.elapsed_ms`. Use `output.verbosity` when you need more:
 
-```text
-ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta
+```json
+{"output":{"verbosity":"compact"}}
+{"output":{"verbosity":"full"}}
+{"output":{"verbosity":"debug"}}
 ```
+
+`compact` is best for normal AI workflows. `full` returns the complete compatibility envelope. `debug` keeps session/socket/PID/fingerprint details for daemon or environment diagnosis. Error responses always keep structured `error.code/message`, and non-empty recovery suggestions are preserved.
 
 For scripts, parse JSON instead of human text:
 

@@ -27,6 +27,30 @@ tools/xwave-env ai schema
 tools/xwave-env ai actions
 ```
 
+## Output Verbosity
+
+Important: `xwave ai query` defaults to compact output. Compact output deliberately omits `tool`, `session`, empty `warnings`, empty `suggested_next_actions`, and `meta.elapsed_ms`. Do not assume those fields exist unless you request them.
+
+Use compact for normal AI workflows:
+
+```json
+{"output":{"verbosity":"compact"}}
+```
+
+Use full when maintaining older scripts or discovering exact response fields:
+
+```json
+{"output":{"verbosity":"full"}}
+```
+
+Use debug when diagnosing session/daemon/socket/FSDB fingerprint issues:
+
+```json
+{"output":{"verbosity":"debug"}}
+```
+
+Errors still include structured `error.code/message`, and non-empty recovery hints remain present in compact output.
+
 For scripted extraction, pipe JSON output into `python3` instead of parsing human text. This is the recommended way for AI agents to pull specific fields or compute custom statistics:
 
 ```bash
@@ -58,17 +82,20 @@ Request envelope:
     "max_events": 1000,
     "max_samples": 1000000
   },
-  "output": {}
+  "output": {
+    "verbosity": "compact"
+  }
 }
 ```
 
 Response envelope always contains:
 
 ```text
-ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta
+compact: ok/action plus non-empty summary/data/findings/error/suggested_next_actions/meta.truncated
+full/debug: ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta
 ```
 
-Only the top-level response envelope is stable across all actions. Field names inside `summary`, `data`, and `findings` are action-specific and may differ by action. Do not guess detailed keys such as latency subfields from memory. For a field dictionary and extraction guidance, see [references/ai-response-dictionary.md](references/ai-response-dictionary.md). For exact fields on a specific build and FSDB, run `tools/xwave-env ai schema` when available, or issue a small bounded query and inspect the returned JSON before writing extraction code.
+Only `ok/action/error` and action-specific key data should be treated as always relevant. Field presence depends on `output.verbosity`; compact output will not include session/meta/tool scaffolding. Field names inside `summary`, `data`, and `findings` are action-specific and may differ by action. Do not guess detailed keys such as latency subfields from memory. For a field dictionary and extraction guidance, see [references/ai-response-dictionary.md](references/ai-response-dictionary.md). For exact fields on a specific build and FSDB, run `tools/xwave-env ai schema` when available, or issue a small bounded query and inspect the returned JSON before writing extraction code.
 
 AI usage rules:
 - Start with `session.open` for repeated work, then use `target.session_id` as a string.
