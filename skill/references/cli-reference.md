@@ -86,7 +86,7 @@ tools/xwave-env ai actions
 响应 envelope 固定包含 `ok/action/session/summary/data/findings/suggested_next_actions/warnings/error/meta`。已实现 action 覆盖 `session/cursor/scope/value/list/apb/axi/event` 主要能力，并支持 `verify.conditions`、`expr.eval_at`、`window.verify`、`signal.changes`、`signal.stability`、`signal.trend`、`inspect_signal`、`detect_anomaly`、`handshake.inspect`、`axi.channel_stall`、`axi.outstanding_timeline`、`axi.request_response_pair`、`axi.latency_outlier`、`apb.transfer_window`。
 
 常用 AI action 参数：
-- `cursor.set/get/list/use/delete`：`name`、`time/at`、`note`；后续 time 字段可用 `@name`、`@name-20ns`、`@+5ns`。
+- `cursor.set/get/list/use/delete`：`name`、`time/at`、`note`；后续 time 字段可用 `@name`、`@name-20ns`、`@name-10cycle(clk)`、`@+5ns`。
 - `window.verify`：`clock`、`sampling`、`time_range`、`conditions[]`；condition 使用 `expr/signals/mode`。
 - `signal.changes/stability`：`signal`、`time_range`、`limit`、`format`。
 - `signal.trend`：`signal`、`clock`、`sampling`、`time_range`。

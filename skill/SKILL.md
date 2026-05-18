@@ -75,8 +75,9 @@ AI usage rules:
 - For one-shot queries, use `target.fsdb + auto_open:true`.
 - Always inspect `ok` and `error.code`; do not parse human text.
 - Prefer `python3 -c 'import json,sys; ...'` pipelines for extracting fields or computing statistics from `xwave ai query` output.
-- Use `cursor.set` after finding an important event time, then use `@name`, `@name-20ns`, `@name+5ns`, or active cursor forms such as `@-10ns` in later time fields.
-- Time fields accept absolute TimeSpec strings directly; cycle offsets like `@fail-10cycle(top.clk)` are reserved but currently return `CLOCK_OFFSET_UNSUPPORTED`.
+- Use `cursor.set` after finding an important event time, then use `@name`, `@name-20ns`, `@name+5ns`, `@name-10cycle(top.clk)`, or active cursor forms such as `@-10ns` in later time fields.
+- Time fields accept absolute TimeSpec strings directly. Cycle offsets use real FSDB clock edges: `cycle(clk)` means posedge, and `posedge(clk)` / `negedge(clk)` choose the edge explicitly.
+- For range actions, prefer `around/before/after` when investigating context around a cursor, for example `{"around":"@deadlock","before":"100cycle(top.clk)","after":"20cycle(top.clk)"}`.
 - Treat `known:false`, `status:"unknown"`, and `pass:null` as inconclusive waveform facts, not failures.
 - Use `scope.list` after `SIGNAL_NOT_FOUND`.
 - Use `limits.max_rows/max_events/max_samples` for broad scans.
@@ -127,7 +128,7 @@ Stop one session or all sessions.
 
 ## Cursor Actions
 
-Cursor actions store named session-local times. Use them when a debug flow has a key event time and later queries need context before or after that point. All later time fields can use `@name`, `@name-20ns`, `@name+5ns`, `@-10ns`, or `@+5ns`.
+Cursor actions store named session-local times. Use them when a debug flow has a key event time and later queries need context before or after that point. All later time fields can use `@name`, `@name-20ns`, `@name+5ns`, `@name-10cycle(top.clk)`, `@-10ns`, or `@+5ns`.
 
 ### `cursor.set`
 

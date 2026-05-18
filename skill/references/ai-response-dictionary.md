@@ -101,7 +101,7 @@ time/time_ps/begin/end/begin_ps/end_ps/duration/duration_ps/window_ps/delta_ps/r
 AI usage:
 - Prefer numeric `*_ps` fields for sorting, deltas, and window checks.
 - Preserve original text fields for user-facing reports.
-- Prefer `resolved_time` and `resolved_time_range` when a query used TimeSpec input such as `@deadlock-20ns`; do not redo cursor math in the agent.
+- Prefer `resolved_time` and `resolved_time_range` when a query used TimeSpec input such as `@deadlock-20ns` or `@deadlock-10cycle(top.clk)`; do not redo cursor math in the agent.
 
 ## Action Groups
 
@@ -174,9 +174,9 @@ tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"cursor.l
 ```
 
 AI usage:
-- Create a cursor when an event time becomes important, then use `@name`, `@name-20ns`, or `@name+5ns` in later time fields.
+- Create a cursor when an event time becomes important, then use `@name`, `@name-20ns`, `@name+5ns`, or `@name-10cycle(top.clk)` in later time fields.
 - Use `cursor.use` before short active-cursor forms like `@-10ns`.
-- Cycle offsets are reserved and currently return `CLOCK_OFFSET_UNSUPPORTED`.
+- Cycle offsets use real FSDB clock edges. `cycle(clk)` means posedge; use `posedge(clk)` or `negedge(clk)` when the edge matters.
 
 ### Value Actions
 

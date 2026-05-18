@@ -58,8 +58,7 @@ void print_help(const char* prog) {
     printf("  %s session kill case_a\n", prog);
     printf("\nDetailed help topics:\n");
     printf("  %s help open|session|value|cursor|list|scope|apb|axi|event|ai\n", prog);
-    printf("\nTimeSpec accepts absolute time, cursor, or cursor offset: 100ns, @fail, @fail-20ns, @+5ns.\n");
-    printf("Cycle offsets such as @fail-10cycle(top.clk) are reserved but not implemented yet.\n");
+    printf("\nTimeSpec accepts absolute time, cursor, duration offset, or cycle offset: 100ns, @fail, @fail-20ns, @fail-10cycle(top.clk), @+5ns.\n");
 }
 
 static void print_open_help(const char* prog) {
@@ -107,7 +106,7 @@ static void print_value_help(const char* prog) {
     printf("  %s value <signal> --at <time_spec> [-b|-d] [-s <sid>]\n\n", prog);
     printf("Arguments:\n");
     printf("  <signal>          Full FSDB signal path.\n");
-    printf("  <time_spec>       Absolute time or cursor expression: 100ns, @fail, @fail-20ns, @+5ns.\n\n");
+    printf("  <time_spec>       Absolute time or cursor expression: 100ns, @fail, @fail-20ns, @fail-10cycle(clk), @+5ns.\n\n");
     printf("Options:\n");
     printf("  -b                Print binary value.\n");
     printf("  -d                Print decimal value.\n");
@@ -127,7 +126,8 @@ static void print_cursor_help(const char* prog) {
     printf("  @fail             Cursor time.\n");
     printf("  @fail-20ns        Cursor minus duration.\n");
     printf("  @+5ns             Active cursor plus duration.\n");
-    printf("  @fail-10cycle(clk) is reserved and returns CLOCK_OFFSET_UNSUPPORTED in this build.\n\n");
+    printf("  @fail-10cycle(clk) Cursor minus 10 posedges of clk.\n");
+    printf("  @fail+5negedge(clk) Cursor plus 5 negedges of clk.\n\n");
     printf("Cursors are stored per session under ~/.xwave/sessions/<sid>/cursors.json.\n");
 }
 

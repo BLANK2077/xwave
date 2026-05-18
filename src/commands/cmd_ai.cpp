@@ -609,6 +609,56 @@ static Json resolve_time_spec_json(const std::string& session_id,
     return out;
 }
 
+static bool build_range_specs(const Json& args,
+                              std::string& begin,
+                              std::string& end,
+                              bool& around_window,
+                              std::string& err) {
+    Json tr = args.value("time_range", Json::object());
+    begin = string_or(tr, "begin", string_or(args, "begin", ""));
+    end = string_or(tr, "end", string_or(args, "end", ""));
+    around_window = false;
+    if (!begin.empty() || !end.empty()) {
+        if (begin.empty()) begin = "0ns";
+        if (end.empty()) end = "max";
+        return true;
+    }
+    std::string around = string_or(args, "around", "");
+    if (around.empty()) {
+        begin = "0ns";
+        end = "max";
+        return true;
+    }
+    std::string before = string_or(args, "before", "0ns");
+    std::string after = string_or(args, "after", "0ns");
+    if (before.empty()) before = "0ns";
+    if (after.empty()) after = "0ns";
+    if (!before.empty() && before[0] == '@') {
+        err = "TIME_SPEC_INVALID: before must be a duration, not a TimeSpec";
+        return false;
+    }
+    if (!after.empty() && after[0] == '@') {
+        err = "TIME_SPEC_INVALID: after must be a duration, not a TimeSpec";
+        return false;
+    }
+    begin = around + "-" + before;
+    end = around + "+" + after;
+    around_window = true;
+    return true;
+}
+
+static void fill_resolved_range(Json& out,
+                                const std::string& sid,
+                                const std::string& begin,
+                                const std::string& end,
+                                bool around_window,
+                                std::string& err) {
+    if (!out["data"].is_object()) out["data"] = Json::object();
+    out["data"]["resolved_time_range"]["begin"] = resolve_time_spec_json(sid, begin, false, err);
+    out["data"]["resolved_time_range"]["end"] = resolve_time_spec_json(sid, end, true, err);
+    if (around_window) out["data"]["resolved_time_range"]["source"] = "around_window";
+}
+
 enum class Tri { False, True, Unknown };
 
 static Tri tri_not(Tri v) {
@@ -803,13 +853,13 @@ static void print_schema() {
         {"request_id", {{"type", "string"}}},
         {"action", {{"type", "string"}}},
         {"target", {{"type", "object"}}},
-        {"args", {{"type", "object"}, {"description", "Action arguments. Time fields accept TimeSpec strings such as 100ns, @deadlock, @deadlock-20ns, or @+5ns. Structured TimeSpec objects are planned but not implemented in this build."}}},
+        {"args", {{"type", "object"}, {"description", "Action arguments. Time fields accept TimeSpec strings such as 100ns, @deadlock, @deadlock-20ns, @deadlock-10cycle(clk), or @+5ns. Range actions also accept around/before/after. Structured TimeSpec objects are planned but not implemented in this build."}}},
         {"limits", {{"type", "object"}}},
         {"output", {{"type", "object"}}}
     };
     schema["xwave_time_spec"] = {
-        {"implemented", Json::array({"absolute time", "@cursor", "@cursor+duration", "@cursor-duration", "@+duration", "@-duration"})},
-        {"planned", Json::array({"structured TimeSpec object", "cycle offset"})}
+        {"implemented", Json::array({"absolute time", "@cursor", "@cursor+duration", "@cursor-duration", "@+duration", "@-duration", "@cursor+Ncycle(clk)", "@cursor-Ncycle(clk)", "@cursor+Nposedge(clk)", "@cursor-Nnegedge(clk)", "around/before/after range"})},
+        {"planned", Json::array({"structured TimeSpec object"})}
     };
     print_json(schema);
 }
@@ -967,9 +1017,11 @@ static int run_query(const Json& req, long long elapsed_ms) {
         if (!capture_server_json(sid, cmd, data, err)) {
             std::string code = err.find("Signal not found") != std::string::npos ? "SIGNAL_NOT_FOUND" :
                                err.find("Clock signal not found") != std::string::npos ? "SIGNAL_NOT_FOUND" :
+                               err.find("SIGNAL_NOT_FOUND") != std::string::npos ? "SIGNAL_NOT_FOUND" :
                                err.find("CURSOR_NOT_FOUND") != std::string::npos ? "CURSOR_NOT_FOUND" :
                                err.find("TIME_OUT_OF_RANGE") != std::string::npos ? "TIME_OUT_OF_RANGE" :
                                err.find("CLOCK_OFFSET_UNSUPPORTED") != std::string::npos ? "CLOCK_OFFSET_UNSUPPORTED" :
+                               err.find("TIME_SPEC_INVALID") != std::string::npos ? "TIME_SPEC_INVALID" :
                                err.find("Invalid time") != std::string::npos ? "TIME_SPEC_INVALID" :
                                err.find("Invalid TimeSpec") != std::string::npos ? "TIME_SPEC_INVALID" :
                                err.find("config not found") != std::string::npos ? "INVALID_REQUEST" :
@@ -979,14 +1031,11 @@ static int run_query(const Json& req, long long elapsed_ms) {
         }
         Json out = ok_out(&info);
         out["data"] = data;
-        Json tr = args.value("time_range", Json::object());
-        std::string begin_spec = string_or(tr, "begin", string_or(args, "begin", ""));
-        std::string end_spec = string_or(tr, "end", string_or(args, "end", ""));
-        if (!begin_spec.empty() || !end_spec.empty()) {
-            Json range;
-            if (!begin_spec.empty()) range["begin"] = resolve_time_spec_json(sid, begin_spec, false, err);
-            if (!end_spec.empty()) range["end"] = resolve_time_spec_json(sid, end_spec, true, err);
-            out["data"]["resolved_time_range"] = range;
+        std::string begin_spec, end_spec;
+        bool around_window = false;
+        if (build_range_specs(args, begin_spec, end_spec, around_window, err) &&
+            (args.contains("time_range") || args.contains("begin") || args.contains("end") || args.contains("around"))) {
+            fill_resolved_range(out, sid, begin_spec, end_spec, around_window, err);
         }
         std::string at_spec = string_or(args, "at", string_or(args, "time", ""));
         if (!at_spec.empty() && out["data"].is_object() && !out["data"].contains("resolved_time")) {
@@ -1029,11 +1078,13 @@ static int run_query(const Json& req, long long elapsed_ms) {
         std::string raw;
         if (!query_value(sid, signal, time, fmt_char(args), raw, err)) {
             bool not_found = err.find("Signal not found") != std::string::npos ||
-                             err.find("Failed to read value for signal") != std::string::npos;
+                             err.find("Failed to read value for signal") != std::string::npos ||
+                             err.find("SIGNAL_NOT_FOUND") != std::string::npos;
             std::string code = not_found ? "SIGNAL_NOT_FOUND" :
                                err.find("CURSOR_NOT_FOUND") != std::string::npos ? "CURSOR_NOT_FOUND" :
                                err.find("TIME_OUT_OF_RANGE") != std::string::npos ? "TIME_OUT_OF_RANGE" :
                                err.find("CLOCK_OFFSET_UNSUPPORTED") != std::string::npos ? "CLOCK_OFFSET_UNSUPPORTED" :
+                               err.find("TIME_SPEC_INVALID") != std::string::npos ? "TIME_SPEC_INVALID" :
                                err.find("Invalid") != std::string::npos ? "TIME_SPEC_INVALID" :
                                "WAVE_QUERY_FAILED";
             return print_error_and_return(req, action, code, err, elapsed_ms);
@@ -1170,8 +1221,11 @@ static int run_query(const Json& req, long long elapsed_ms) {
             return ok ? 0 : 1;
         }
         if (action == "list.diff") {
-            std::string begin = string_or(args, "begin", "0ns");
-            std::string end = string_or(args, "end", "max");
+            std::string begin, end;
+            bool around_window = false;
+            if (!build_range_specs(args, begin, end, around_window, err)) {
+                return print_error_and_return(req, action, "TIME_SPEC_INVALID", err, elapsed_ms);
+            }
             std::string payload;
             if (!capture_server_text(sid, std::string(CMD_LIST_DIFF) + " " + name + " " + begin + " " + end, payload, err)) {
                 return print_error_and_return(req, action, "WAVE_QUERY_FAILED", err, elapsed_ms);
@@ -1179,8 +1233,7 @@ static int run_query(const Json& req, long long elapsed_ms) {
             Json out = ok_out(&info);
             out["summary"] = {{"name", name}, {"diff_time", payload}};
             out["data"]["time"] = payload;
-            out["data"]["resolved_time_range"]["begin"] = resolve_time_spec_json(sid, begin, false, err);
-            out["data"]["resolved_time_range"]["end"] = resolve_time_spec_json(sid, end, true, err);
+            fill_resolved_range(out, sid, begin, end, around_window, err);
             print_json(out); return 0;
         }
     }
@@ -1287,9 +1340,11 @@ static int run_query(const Json& req, long long elapsed_ms) {
         if (name.empty()) return print_error_and_return(req, action, "MISSING_FIELD", "event action requires args.name or latest config", elapsed_ms);
         std::string expr; if (!get_string(args, "expr", expr)) return print_error_and_return(req, action, "MISSING_FIELD", "event.find/export requires args.expr", elapsed_ms);
         expr = compact_expr_ws(expr);
-        Json tr = args.value("time_range", Json::object());
-        std::string begin = string_or(tr, "begin", string_or(args, "begin", "0ns"));
-        std::string end = string_or(tr, "end", string_or(args, "end", "max"));
+        std::string begin, end;
+        bool around_window = false;
+        if (!build_range_specs(args, begin, end, around_window, err)) {
+            return print_error_and_return(req, action, "TIME_SPEC_INVALID", err, elapsed_ms);
+        }
         int limit = action == "event.find" ? 1 : int_or(limits, "max_rows", int_or(args, "limit", 1000));
         Json ctx = args.value("context", Json::object());
         std::string mode = "json";
@@ -1306,8 +1361,7 @@ static int run_query(const Json& req, long long elapsed_ms) {
         Json out = ok_out(&info);
         out["summary"] = {{"name", name}, {"begin", begin}, {"end", end}};
         out["data"]["events"] = data;
-        out["data"]["resolved_time_range"]["begin"] = resolve_time_spec_json(sid, begin, false, err);
-        out["data"]["resolved_time_range"]["end"] = resolve_time_spec_json(sid, end, true, err);
+        fill_resolved_range(out, sid, begin, end, around_window, err);
         print_json(out); return 0;
     }
 

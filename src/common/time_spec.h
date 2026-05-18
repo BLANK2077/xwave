@@ -14,6 +14,7 @@ struct DurationSpec {
     std::string unit = "ns";
     bool cycle = false;
     std::string clock;
+    bool posedge = true;
 };
 
 struct ParsedTimeSpec {

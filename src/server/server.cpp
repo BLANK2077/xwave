@@ -207,6 +207,116 @@ static std::string fsdb_time_scale() {
     return scale ? scale : "unknown";
 }
 
+static bool convert_duration_to_time(const DurationSpec& duration,
+                                     npiFsdbTime& out_time,
+                                     std::string& error) {
+    if (duration.cycle) {
+        error = "TIME_SPEC_INVALID: cycle duration requires a cursor or around base time";
+        return false;
+    }
+    if (duration.value < 0) {
+        error = "TIME_SPEC_INVALID: negative duration is not allowed here";
+        return false;
+    }
+    if (!g_fsdb_file ||
+        !npi_fsdb_convert_time_in(g_fsdb_file,
+                                  duration.value,
+                                  duration.unit.c_str(),
+                                  out_time)) {
+        error = "Failed to convert TimeSpec duration for FSDB scale " + fsdb_time_scale();
+        return false;
+    }
+    return true;
+}
+
+static bool resolve_cycle_offset(npiFsdbTime base,
+                                 const DurationSpec& offset,
+                                 npiFsdbTime& out_time,
+                                 std::string& error) {
+    if (!std::isfinite(offset.value)) {
+        error = "TIME_SPEC_INVALID: cycle offset is not finite";
+        return false;
+    }
+    double rounded = std::round(offset.value);
+    if (std::fabs(offset.value - rounded) > 1e-9) {
+        error = "TIME_SPEC_INVALID: cycle offset must be an integer";
+        return false;
+    }
+    long long cycles = static_cast<long long>(rounded);
+    if (cycles == 0) {
+        out_time = base;
+        return true;
+    }
+    npiFsdbSigHandle clk = npi_fsdb_sig_by_name(g_fsdb_file, offset.clock.c_str(), NULL);
+    if (!clk) {
+        error = "SIGNAL_NOT_FOUND: Clock signal not found: " + offset.clock;
+        return false;
+    }
+    ClockEdgeCursor cursor(clk, offset.posedge);
+    if (!cursor.valid()) {
+        error = "WAVE_QUERY_FAILED: failed to create clock edge cursor for " + offset.clock;
+        return false;
+    }
+
+    npiFsdbTime edge_time = 0;
+    if (cycles > 0) {
+        if (!cursor.first_at_or_after(base, edge_time)) {
+            error = "TIME_OUT_OF_RANGE: no clock edge after cursor time";
+            return false;
+        }
+        if (edge_time <= base && !cursor.next(edge_time)) {
+            error = "TIME_OUT_OF_RANGE: no clock edge after cursor time";
+            return false;
+        }
+        for (long long i = 1; i < cycles; ++i) {
+            if (!cursor.next(edge_time)) {
+                error = "TIME_OUT_OF_RANGE: cycle offset exceeds waveform end";
+                return false;
+            }
+        }
+    } else {
+        if (!cursor.prev_before(base, edge_time)) {
+            error = "TIME_OUT_OF_RANGE: no clock edge before cursor time";
+            return false;
+        }
+        for (long long i = -1; i > cycles; --i) {
+            if (!cursor.prev_before(edge_time, edge_time)) {
+                error = "TIME_OUT_OF_RANGE: cycle offset is before waveform start";
+                return false;
+            }
+        }
+    }
+    out_time = edge_time;
+    return true;
+}
+
+static bool apply_duration_offset(npiFsdbTime base,
+                                  DurationSpec offset,
+                                  npiFsdbTime& out_time,
+                                  std::string& error) {
+    if (offset.cycle) {
+        return resolve_cycle_offset(base, offset, out_time, error);
+    }
+    npiFsdbTime delta = 0;
+    double sign = offset.value < 0 ? -1.0 : 1.0;
+    offset.value = std::fabs(offset.value);
+    if (!convert_duration_to_time(offset, delta, error)) return false;
+    if (sign < 0) {
+        if (base < delta) {
+            error = "TIME_OUT_OF_RANGE: resolved time is before waveform start";
+            return false;
+        }
+        out_time = base - delta;
+    } else {
+        out_time = base + delta;
+        if (out_time < base) {
+            error = "TIME_OUT_OF_RANGE: resolved time is after waveform end";
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool parse_user_time(const char* text,
                             bool allow_max,
                             npiFsdbTime& out_time,
@@ -275,28 +385,9 @@ static bool parse_user_time(const char* text,
     }
     uint64_t resolved = cursor.time;
     if (spec.has_offset) {
-        if (spec.offset.cycle) {
-            error = "CLOCK_OFFSET_UNSUPPORTED: cycle offsets are not implemented in this build";
-            return false;
-        }
-        npiFsdbTime delta = 0;
-        if (!g_fsdb_file ||
-            !npi_fsdb_convert_time_in(g_fsdb_file,
-                                      std::fabs(spec.offset.value),
-                                      spec.offset.unit.c_str(),
-                                      delta)) {
-            error = "Failed to convert TimeSpec offset '" + spec.source + "'";
-            return false;
-        }
-        if (spec.offset.value < 0) {
-            if (resolved < delta) {
-                error = "TIME_OUT_OF_RANGE: resolved time is before waveform start";
-                return false;
-            }
-            resolved -= delta;
-        } else {
-            resolved += delta;
-        }
+        npiFsdbTime adjusted = 0;
+        if (!apply_duration_offset(resolved, spec.offset, adjusted, error)) return false;
+        resolved = adjusted;
     }
     out_time = static_cast<npiFsdbTime>(resolved);
     return true;
@@ -352,10 +443,36 @@ static bool json_time_range(const Json& args,
     begin = 0;
     end = 0xFFFFFFFFFFFFFFFFULL;
     Json tr = args.value("time_range", Json::object());
-    std::string begin_s = tr.value("begin", args.value("begin", std::string("0ns")));
-    std::string end_s = tr.value("end", args.value("end", std::string("max")));
-    return parse_user_time(begin_s.c_str(), false, begin, error) &&
-           parse_user_time(end_s.c_str(), true, end, error);
+    bool has_begin = (tr.is_object() && tr.contains("begin")) || args.contains("begin");
+    bool has_end = (tr.is_object() && tr.contains("end")) || args.contains("end");
+    if (has_begin || has_end || !args.contains("around")) {
+        std::string begin_s = tr.value("begin", args.value("begin", std::string("0ns")));
+        std::string end_s = tr.value("end", args.value("end", std::string("max")));
+        return parse_user_time(begin_s.c_str(), false, begin, error) &&
+               parse_user_time(end_s.c_str(), true, end, error);
+    }
+
+    std::string around_s = args.value("around", std::string());
+    npiFsdbTime around = 0;
+    if (!parse_user_time(around_s.c_str(), false, around, error)) return false;
+
+    auto apply_window_duration = [&](const std::string& text,
+                                     bool before,
+                                     npiFsdbTime& out) -> bool {
+        DurationSpec duration;
+        if (!parse_duration_spec(text, duration, error)) return false;
+        if (duration.value < 0) {
+            error = "TIME_SPEC_INVALID: before/after duration must be non-negative";
+            return false;
+        }
+        if (before) duration.value = -duration.value;
+        return apply_duration_offset(around, duration, out, error);
+    };
+
+    std::string before_s = args.value("before", std::string("0ns"));
+    std::string after_s = args.value("after", std::string("0ns"));
+    return apply_window_duration(before_s, true, begin) &&
+           apply_window_duration(after_s, false, end);
 }
 
 static npiFsdbValType json_value_format(const Json& args) {

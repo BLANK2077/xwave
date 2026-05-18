@@ -43,12 +43,36 @@ bool parse_duration_spec(const std::string& text, DurationSpec& out, std::string
     }
     std::string unit = trim(end ? end : "");
     if (unit.empty()) unit = "ns";
-    if (unit.find("cycle(") == 0 && unit.size() > 7 && unit[unit.size() - 1] == ')') {
+    auto parse_cycle_unit = [&](const std::string& prefix, bool posedge) -> bool {
+        if (unit.find(prefix + "(") != 0 || unit.size() <= prefix.size() + 2 ||
+            unit[unit.size() - 1] != ')') {
+            return false;
+        }
         out.value = value;
-        out.unit = "cycle";
+        out.unit = prefix;
         out.cycle = true;
-        out.clock = unit.substr(6, unit.size() - 7);
+        out.clock = unit.substr(prefix.size() + 1, unit.size() - prefix.size() - 2);
+        out.posedge = posedge;
+        if (out.clock.empty()) {
+            error = "Invalid duration '" + text + "': cycle offset requires a clock";
+            return true;
+        }
         return true;
+    };
+    if (parse_cycle_unit("cycle", true)) {
+        return error.empty();
+    }
+    if (parse_cycle_unit("posedge", true)) {
+        return error.empty();
+    }
+    if (parse_cycle_unit("negedge", false)) {
+        return error.empty();
+    }
+    if (unit.find("cycle(") == 0 || unit.find("posedge(") == 0 || unit.find("negedge(") == 0) {
+        if (error.empty()) {
+            error = "Invalid duration '" + text + "': malformed cycle offset";
+        }
+        return false;
     }
     if (!valid_unit(unit)) {
         error = "Invalid duration '" + text + "': unsupported unit, expected us/ns/ps/fs";
@@ -58,6 +82,7 @@ bool parse_duration_spec(const std::string& text, DurationSpec& out, std::string
     out.unit = unit;
     out.cycle = false;
     out.clock.clear();
+    out.posedge = true;
     return true;
 }
 

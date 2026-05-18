@@ -88,7 +88,7 @@ After an idle timeout, the daemon exits and releases the FSDB/NPI handle. Runnin
 
 ### TimeSpec And Cursors
 
-Commands that need a time accept a `TimeSpec`. A TimeSpec can be an absolute time, a saved cursor, or a cursor plus/minus a duration:
+Commands that need a time accept a `TimeSpec`. A TimeSpec can be an absolute time, a saved cursor, a cursor plus/minus a duration, or a cursor plus/minus clock cycles:
 
 ```text
 100ns
@@ -97,9 +97,18 @@ Commands that need a time accept a `TimeSpec`. A TimeSpec can be an absolute tim
 @deadlock+5ns
 @-10ns
 @+5ns
+@deadlock-10cycle(top.clk)
+@deadlock+5posedge(top.clk)
+@deadlock-2negedge(top.clk)
 ```
 
-Absolute times accept `us`, `ns`, `ps`, and `fs`. If no suffix is provided, the default is `ns`. `@` means the active cursor. Cycle offsets such as `@deadlock-10cycle(top.clk)` are reserved for a later version and currently return `CLOCK_OFFSET_UNSUPPORTED`.
+Absolute times accept `us`, `ns`, `ps`, and `fs`. If no suffix is provided, the default is `ns`. `@` means the active cursor. `cycle(clk)` uses posedges by default; use `posedge(clk)` or `negedge(clk)` to choose the edge explicitly.
+
+AI JSON range actions also accept `around`, `before`, and `after`. Explicit `time_range.begin/end` still takes priority:
+
+```json
+{"around":"@deadlock","before":"100ns","after":"20cycle(top.clk)"}
+```
 
 Time conversion happens inside the daemon after the FSDB is opened. The daemon uses the NPI time conversion API for the current FSDB time scale, so do not assume the internal FSDB unit is always `ps`.
 
@@ -109,6 +118,7 @@ Examples:
 tools/xwave-env value top.clk 10ns
 tools/xwave-env cursor set deadlock 120340ns -note rready_stall_start
 tools/xwave-env value top.rready --at @deadlock-20ns
+tools/xwave-env value top.rready --at @deadlock-10cycle(top.clk)
 tools/xwave-env list diff -l if0 -b 5ns -e 50ns
 tools/xwave-env event find -n if0 -expr "valid && ready" -b 100us
 ```

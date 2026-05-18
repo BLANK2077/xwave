@@ -88,7 +88,7 @@ idle timeout 后 daemon 会退出并释放 FSDB/NPI 句柄。重新执行 `open 
 
 ### TimeSpec 与游标
 
-所有需要时间的命令都接受 `TimeSpec`。TimeSpec 可以是绝对时间、已保存游标，或游标加减时间偏移：
+所有需要时间的命令都接受 `TimeSpec`。TimeSpec 可以是绝对时间、已保存游标、游标加减时间偏移，或游标加减时钟周期：
 
 ```text
 100ns
@@ -97,9 +97,18 @@ idle timeout 后 daemon 会退出并释放 FSDB/NPI 句柄。重新执行 `open 
 @deadlock+5ns
 @-10ns
 @+5ns
+@deadlock-10cycle(top.clk)
+@deadlock+5posedge(top.clk)
+@deadlock-2negedge(top.clk)
 ```
 
-绝对时间支持 `us`、`ns`、`ps`、`fs`。如果不写单位，默认按 `ns` 处理。`@` 表示当前 active cursor。`@deadlock-10cycle(top.clk)` 这类 cycle offset 语法已预留，当前版本会返回 `CLOCK_OFFSET_UNSUPPORTED`。
+绝对时间支持 `us`、`ns`、`ps`、`fs`。如果不写单位，默认按 `ns` 处理。`@` 表示当前 active cursor。`cycle(clk)` 默认使用 posedge；也可以显式写 `posedge(clk)` 或 `negedge(clk)`。
+
+AI JSON 的范围类 action 还支持 `around`、`before`、`after`。显式 `time_range.begin/end` 的优先级仍然更高：
+
+```json
+{"around":"@deadlock","before":"100ns","after":"20cycle(top.clk)"}
+```
 
 时间转换发生在 daemon 侧。daemon 打开 FSDB 后，会基于当前 FSDB 的 time scale 调用 NPI 时间转换 API，因此不要假设 FSDB 内部时间单位总是 `ps`。
 
@@ -109,6 +118,7 @@ idle timeout 后 daemon 会退出并释放 FSDB/NPI 句柄。重新执行 `open 
 tools/xwave-env value top.clk 10ns
 tools/xwave-env cursor set deadlock 120340ns -note rready_stall_start
 tools/xwave-env value top.rready --at @deadlock-20ns
+tools/xwave-env value top.rready --at @deadlock-10cycle(top.clk)
 tools/xwave-env list diff -l if0 -b 5ns -e 50ns
 tools/xwave-env event find -n if0 -expr "valid && ready" -b 100us
 ```
