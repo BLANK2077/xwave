@@ -158,19 +158,8 @@ static std::string with_value_prefix(const std::string& value, char prefix) {
 static Json wave_value_json(const std::string& raw, char prefix = 'b') {
     Json v;
     std::string text = with_value_prefix(raw, prefix);
-    v["text"] = text;
+    v["value"] = text;
     v["known"] = !contains_xz_value(text);
-    if (!v["known"].get<bool>()) v["unknown_reason"] = "contains_xz";
-    if (text.size() >= 2 && text[0] == '\'' && (text[1] == 'b' || text[1] == 'B')) v["bits"] = text.substr(2);
-    if (text.size() >= 2 && text[0] == '\'' && (text[1] == 'h' || text[1] == 'H')) v["hex"] = "0x" + text.substr(2);
-    if (v["known"].get<bool>()) {
-        std::string bits = xwave::expr_bits_only(text);
-        unsigned long long u = 0;
-        for (char c : bits) {
-            u = (u << 1) | (c == '1' ? 1ULL : 0ULL);
-        }
-        v["unsigned"] = u;
-    }
     return v;
 }
 
@@ -1171,7 +1160,7 @@ static Json ai_signal_stability(const Json& args, std::string& error) {
     }
     if (!stable) {
         for (const auto& item : arr) {
-            if (item["value"]["text"].get<std::string>() != first) {
+            if (item["value"]["value"].get<std::string>() != first) {
                 data["first_change_time"] = item["time"];
                 break;
             }
@@ -1455,6 +1444,84 @@ static Json ai_signal_trend(const Json& args, std::string& error) {
         data["min_value"] = minv;
         data["max_value"] = maxv;
         data["monotonic"] = stable ? "stable" : inc ? "increasing" : dec ? "decreasing" : "none";
+    }
+    return data;
+}
+
+static Json ai_signal_statistics(const Json& args, std::string& error) {
+    std::string signal = args.value("signal", std::string());
+    std::string clock = args.value("clock", std::string());
+    if (signal.empty() || clock.empty()) {
+        error = "signal.statistics requires args.signal and args.clock";
+        return Json();
+    }
+    npiFsdbTime begin = 0, end = 0;
+    if (!json_time_range(args, begin, end, error)) return Json();
+    Json signals = {{"sig", signal}};
+    std::vector<std::string> aliases, paths;
+    fsdbSigVec_t handles;
+    if (!build_signal_alias_handles(signals, aliases, paths, handles, error)) return Json();
+
+    bool posedge = args.value("sampling", std::string("posedge")) != "negedge";
+    int max_samples = args.value("max_samples", 1000000);
+    int samples = 0, known = 0, unknown = 0;
+    int high_cycles = 0, low_cycles = 0;
+    int transitions = 0;
+    bool truncated = false;
+    bool have_known = false;
+    unsigned long long first = 0, final = 0, minv = 0, maxv = 0, prev = 0;
+    npiFsdbTime first_change_time = 0, last_change_time = 0;
+
+    if (!sample_on_clock(clock, posedge, aliases, handles, begin, end, max_samples,
+        [&](npiFsdbTime t, const std::map<std::string, std::string>& values) -> bool {
+            auto it = values.find("sig");
+            if (it == values.end() || contains_xz_value(it->second)) {
+                unknown++;
+                return true;
+            }
+            std::string bits = xwave::expr_bits_only(it->second);
+            unsigned long long v = 0;
+            for (char c : bits) v = (v << 1) | (c == '1' ? 1ULL : 0ULL);
+            known++;
+            if (v == 0) low_cycles++;
+            else if (bits.size() == 1) high_cycles++;
+            if (!have_known) {
+                first = final = minv = maxv = prev = v;
+                have_known = true;
+            } else {
+                if (v != prev) {
+                    transitions++;
+                    if (first_change_time == 0) first_change_time = t;
+                    last_change_time = t;
+                }
+                if (v < minv) minv = v;
+                if (v > maxv) maxv = v;
+                prev = final = v;
+            }
+            return true;
+        }, error, samples, truncated)) return Json();
+
+    Json data;
+    data["signal"] = signal;
+    data["clock"] = clock;
+    data["sampling"] = posedge ? "posedge" : "negedge";
+    data["begin"] = format_time(begin);
+    data["end"] = format_time(end);
+    data["sample_count"] = samples;
+    data["known_count"] = known;
+    data["unknown_count"] = unknown;
+    data["transition_count"] = transitions;
+    data["truncated"] = truncated;
+    if (have_known) {
+        data["first"] = first;
+        data["final"] = final;
+        data["min"] = minv;
+        data["max"] = maxv;
+        data["low_cycles"] = low_cycles;
+        data["high_cycles"] = high_cycles;
+        data["high_ratio"] = known > 0 ? static_cast<double>(high_cycles) / static_cast<double>(known) : 0.0;
+        if (first_change_time != 0) data["first_change_time"] = format_time(first_change_time);
+        if (last_change_time != 0) data["last_change_time"] = format_time(last_change_time);
     }
     return data;
 }
@@ -2052,6 +2119,7 @@ static Json ai_dispatch_query(const Json& req, std::string& error) {
     if (action == "signal.changes") return ai_signal_changes(args, error);
     if (action == "signal.stability") return ai_signal_stability(args, error);
     if (action == "signal.trend") return ai_signal_trend(args, error);
+    if (action == "signal.statistics") return ai_signal_statistics(args, error);
     if (action == "inspect_signal") return ai_inspect_signal(args, error);
     if (action == "detect_anomaly") return ai_detect_anomaly(args, error);
     if (action == "handshake.inspect") return ai_handshake_inspect(args, error);

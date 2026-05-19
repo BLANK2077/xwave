@@ -291,7 +291,21 @@ tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"session.
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], d.get("summary", {}))'
 ```
 
-Current AI actions cover `session/cursor/scope/value/list/apb/axi/event`, condition and expression checks, window verification, signal inspection, anomaly detection, handshake inspection, and protocol debug facts.
+AI value objects are intentionally small:
+
+```json
+{"value": "'h12", "known": true}
+```
+
+Use the request `format` field (`hex`, `binary`, `decimal`, or `auto`) to choose the value string representation. Values containing `x/z` return `known:false`.
+
+For event counts, prefer built-in aggregation instead of exporting every row and counting in Python:
+
+```bash
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":"case_a"},"args":{"name":"if0","expr":"valid && ready","time_range":{"begin":"0ns","end":"100us"},"aggregate":{"count":true,"group_by":["qid"],"events":false}}}'
+```
+
+Current AI actions cover `session/cursor/scope/value/list/apb/axi/event`, condition and expression checks, window verification, signal statistics, signal inspection, anomaly detection, handshake inspection, and protocol debug facts.
 
 ## Session Debugging
 

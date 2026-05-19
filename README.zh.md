@@ -291,7 +291,21 @@ tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"session.
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], d.get("summary", {}))'
 ```
 
-当前 AI action 覆盖 `session/cursor/scope/value/list/apb/axi/event`，以及 condition、expression、window、signal inspection、anomaly detection、handshake 和协议调试事实。
+AI value 对象刻意保持精简：
+
+```json
+{"value": "'h12", "known": true}
+```
+
+通过请求里的 `format` 字段（`hex`、`binary`、`decimal` 或 `auto`）控制 `value` 字符串格式。包含 `x/z` 的值返回 `known:false`。
+
+统计 event 次数时，优先使用内置聚合，不要先导出所有行再用 Python 计数：
+
+```bash
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":"case_a"},"args":{"name":"if0","expr":"valid && ready","time_range":{"begin":"0ns","end":"100us"},"aggregate":{"count":true,"group_by":["qid"],"events":false}}}'
+```
+
+当前 AI action 覆盖 `session/cursor/scope/value/list/apb/axi/event`，以及 condition、expression、window、signal statistics、signal inspection、anomaly detection、handshake 和协议调试事实。
 
 ## Session 排障
 

@@ -22,6 +22,7 @@
 #include <fstream>
 #include <fcntl.h>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -119,22 +120,90 @@ static std::string normalize_numeric(std::string value) {
 static Json make_value_object(const std::string& raw) {
     Json v;
     std::string text = trim(raw);
-    v["text"] = text;
+    v["value"] = text;
     v["known"] = !contains_xz(text);
-    if (!v["known"].get<bool>()) {
-        v["unknown_reason"] = contains_xz(text) ? "contains_xz" : "unknown";
-    }
-    if (text.size() >= 2 && text[0] == '\'' && (text[1] == 'h' || text[1] == 'H')) {
-        v["hex"] = "0x" + text.substr(2);
-    } else if (text.size() >= 2 && text[0] == '\'' && (text[1] == 'b' || text[1] == 'B')) {
-        v["bits"] = text.substr(2);
-    }
-    if (v["known"].get<bool>()) {
-        std::string n = normalize_numeric(text);
-        unsigned long long u = strtoull(n.c_str(), nullptr, 16);
-        v["unsigned"] = u;
-    }
     return v;
+}
+
+static Json make_value_map(const Json& raw_map) {
+    Json out = Json::object();
+    if (!raw_map.is_object()) return out;
+    for (auto it = raw_map.begin(); it != raw_map.end(); ++it) {
+        if (it.value().is_string()) out[it.key()] = make_value_object(it.value().get<std::string>());
+        else out[it.key()] = it.value();
+    }
+    return out;
+}
+
+static Json simplify_event_value_objects(Json events) {
+    if (!events.is_array()) return events;
+    for (auto& ev : events) {
+        if (!ev.is_object()) continue;
+        if (ev.contains("signals")) ev["signals"] = make_value_map(ev["signals"]);
+        if (ev.contains("fields")) ev["fields"] = make_value_map(ev["fields"]);
+    }
+    return events;
+}
+
+static std::string event_group_value(const Json& ev, const std::string& key) {
+    auto get = [&](const char* section) -> std::string {
+        if (!ev.contains(section) || !ev[section].is_object()) return std::string();
+        auto it = ev[section].find(key);
+        if (it == ev[section].end()) return std::string();
+        if (it->is_string()) return it->get<std::string>();
+        if (it->is_object() && it->contains("value") && (*it)["value"].is_string()) return (*it)["value"].get<std::string>();
+        return std::string();
+    };
+    std::string v = get("fields");
+    if (v.empty()) v = get("signals");
+    if (v.empty() || v == "?" || contains_xz(v)) return "unknown";
+    return v;
+}
+
+static Json aggregate_events(const Json& events, const Json& aggregate_args, int limit) {
+    bool want_count = aggregate_args.value("count", true);
+    Json group_by_json = aggregate_args.value("group_by", Json::array());
+    std::vector<std::string> group_by;
+    if (group_by_json.is_array()) {
+        for (const auto& item : group_by_json) if (item.is_string()) group_by.push_back(item.get<std::string>());
+    }
+
+    Json out = Json::object();
+    size_t event_count = events.is_array() ? events.size() : 0;
+    if (want_count) out["count"] = event_count;
+    out["limited"] = limit > 0 && event_count >= static_cast<size_t>(limit);
+
+    if (!group_by.empty() && events.is_array()) {
+        struct GroupState {
+            Json key;
+            int count = 0;
+            std::string first_time;
+            std::string last_time;
+        };
+        std::map<std::string, GroupState> groups;
+        for (const auto& ev : events) {
+            Json key_obj = Json::object();
+            for (const auto& key : group_by) key_obj[key] = event_group_value(ev, key);
+            std::string group_id = key_obj.dump();
+            GroupState& st = groups[group_id];
+            if (st.count == 0) {
+                st.key = key_obj;
+                st.first_time = ev.value("time", std::string());
+            }
+            st.count++;
+            st.last_time = ev.value("time", std::string());
+        }
+        Json arr = Json::array();
+        for (const auto& kv : groups) {
+            arr.push_back({{"key", kv.second.key},
+                           {"count", kv.second.count},
+                           {"first_time", kv.second.first_time},
+                           {"last_time", kv.second.last_time}});
+        }
+        out["groups"] = arr;
+        out["group_count"] = arr.size();
+    }
+    return out;
 }
 
 static Json base_response(const Json& req,
@@ -843,7 +912,7 @@ private:
             ok_ = false;
             return "";
         }
-        return (*it)["value"]["text"].get<std::string>();
+        return (*it)["value"]["value"].get<std::string>();
     }
 
     Tri parse_primary() {
@@ -912,7 +981,7 @@ static void print_actions() {
         "axi.config.load", "axi.config.list", "axi.query", "axi.cursor", "axi.analysis",
         "event.config.load", "event.config.list", "event.find", "event.export",
         "verify.conditions", "expr.eval_at",
-        "window.verify", "signal.changes", "signal.stability", "signal.trend",
+        "window.verify", "signal.changes", "signal.stability", "signal.trend", "signal.statistics",
         "inspect_signal", "detect_anomaly", "handshake.inspect",
         "axi.channel_stall", "axi.outstanding_timeline", "axi.request_response_pair",
         "axi.latency_outlier", "apb.transfer_window"
@@ -929,7 +998,7 @@ static void print_actions() {
         "axi.config.load", "axi.config.list", "axi.query", "axi.cursor", "axi.analysis",
         "event.config.load", "event.config.list", "event.find", "event.export",
         "verify.conditions", "expr.eval_at",
-        "window.verify", "signal.changes", "signal.stability", "signal.trend",
+        "window.verify", "signal.changes", "signal.stability", "signal.trend", "signal.statistics",
         "inspect_signal", "detect_anomaly", "handshake.inspect",
         "axi.channel_stall", "axi.outstanding_timeline", "axi.request_response_pair",
         "axi.latency_outlier", "apb.transfer_window"
@@ -973,6 +1042,14 @@ static void print_schema() {
         {"implemented", Json::array({"absolute time", "@cursor", "@cursor+duration", "@cursor-duration", "@+duration", "@-duration", "@cursor+Ncycle(clk)", "@cursor-Ncycle(clk)", "@cursor+Nposedge(clk)", "@cursor-Nnegedge(clk)", "around/before/after range"})},
         {"planned", Json::array({"structured TimeSpec object"})}
     };
+    schema["xwave_value_shape"] = {
+        {"fields", Json::array({"value", "known"})},
+        {"description", "AI signal value objects only contain the display value string and known boolean. Use args.format to choose the display format."}
+    };
+    schema["xwave_event_aggregate"] = {
+        {"action", "event.export"},
+        {"args", Json::object({{"aggregate", Json::object({{"count", true}, {"group_by", Json::array({"alias_or_field"})}, {"events", false}})}})}
+    };
     print_json(schema);
 }
 
@@ -995,7 +1072,7 @@ static bool action_known(const std::string& action) {
         "axi.config.load", "axi.config.list", "axi.query", "axi.cursor", "axi.analysis",
         "event.config.load", "event.config.list", "event.find", "event.export",
         "verify.conditions", "expr.eval_at",
-        "window.verify", "signal.changes", "signal.stability", "signal.trend",
+        "window.verify", "signal.changes", "signal.stability", "signal.trend", "signal.statistics",
         "inspect_signal", "detect_anomaly", "handshake.inspect",
         "axi.channel_stall", "axi.outstanding_timeline", "axi.request_response_pair",
         "axi.latency_outlier", "apb.transfer_window"
@@ -1007,7 +1084,7 @@ static bool server_ai_action(const std::string& action) {
     static const std::vector<std::string> server_actions = {
         "cursor.set", "cursor.get", "cursor.list", "cursor.delete", "cursor.use",
         "expr.eval_at",
-        "window.verify", "signal.changes", "signal.stability", "signal.trend",
+        "window.verify", "signal.changes", "signal.stability", "signal.trend", "signal.statistics",
         "inspect_signal", "detect_anomaly", "handshake.inspect",
         "axi.channel_stall", "axi.outstanding_timeline", "axi.request_response_pair",
         "axi.latency_outlier", "apb.transfer_window"
@@ -1314,6 +1391,11 @@ static int run_query(const Json& req, long long elapsed_ms) {
             Json out = base_response(req, action, ok, elapsed_ms);
             fill_session(out, info);
             out["summary"] = {{"name", name}, {"time", time}};
+            if (data.is_object() && data.contains("values") && data["values"].is_object()) {
+                data["values"] = make_value_map(data["values"]);
+            } else if (data.is_object()) {
+                data = make_value_map(data);
+            }
             out["data"] = data;
             Json resolved = resolve_time_spec_json(sid, time, false, err);
             if (!resolved.is_null()) out["data"]["resolved_time"] = resolved;
@@ -1468,9 +1550,24 @@ static int run_query(const Json& req, long long elapsed_ms) {
             cmd = std::string(action == "event.find" ? CMD_EVENT_FIND : CMD_EVENT_EXPORT) + " " + name + " " + begin + " " + end + " " + std::to_string(limit) + " " + mode + " expr " + expr;
         }
         Json data; if (!capture_server_json(sid, cmd, data, err)) return print_error_and_return(req, action, "WAVE_QUERY_FAILED", err, elapsed_ms);
+        Json raw_events = data;
+        Json aggregate = Json::object();
+        bool has_aggregate = action == "event.export" && args.contains("aggregate") && args["aggregate"].is_object();
+        bool include_events = true;
+        if (has_aggregate) {
+            aggregate = aggregate_events(raw_events, args["aggregate"], limit);
+            include_events = args["aggregate"].value("events", true);
+        }
         Json out = ok_out(&info);
         out["summary"] = {{"name", name}, {"begin", begin}, {"end", end}};
-        out["data"]["events"] = data;
+        if (data.is_array()) out["summary"]["event_count"] = data.size();
+        if (has_aggregate) {
+            out["summary"]["aggregate_count"] = aggregate.value("count", 0);
+            out["summary"]["limited"] = aggregate.value("limited", false);
+            if (aggregate.contains("group_count")) out["summary"]["group_count"] = aggregate["group_count"];
+            out["data"]["aggregate"] = aggregate;
+        }
+        if (include_events) out["data"]["events"] = simplify_event_value_objects(data);
         fill_resolved_range(out, sid, begin, end, around_window, err);
         return emit(out);
     }
@@ -1493,11 +1590,11 @@ static int run_query(const Json& req, long long elapsed_ms) {
             if (!query_value(sid, signal, time, 'H', raw, err)) {
                 item["status"] = "unknown"; item["known"] = false; item["pass"] = nullptr; item["error"] = err; unknown++;
             } else if (contains_xz(raw) || contains_xz(expected)) {
-                item["observed"] = raw; item["status"] = "unknown"; item["known"] = false; item["pass"] = nullptr; unknown++;
+                item["observed"] = make_value_object(raw); item["status"] = "unknown"; item["known"] = false; item["pass"] = nullptr; unknown++;
             } else {
                 bool eq = normalize_numeric(raw) == normalize_numeric(expected);
                 bool pass = (op == "!=") ? !eq : eq;
-                item["observed"] = raw; item["status"] = pass ? "pass" : "fail"; item["known"] = true; item["pass"] = pass;
+                item["observed"] = make_value_object(raw); item["status"] = pass ? "pass" : "fail"; item["known"] = true; item["pass"] = pass;
                 if (pass) passed++; else failed++;
             }
             checks.push_back(item);

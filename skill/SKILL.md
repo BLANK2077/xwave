@@ -51,6 +51,8 @@ Use debug when diagnosing session/daemon/socket/FSDB fingerprint issues:
 
 Errors still include structured `error.code/message`, and non-empty recovery hints remain present in compact output.
 
+AI value objects are intentionally minimal everywhere: `{"value":"...", "known":true|false}`. Do not expect `text`, `bits`, `hex`, `unsigned`, `signed`, or `unknown_reason`; choose the string representation with request `format`.
+
 For scripted extraction, pipe JSON output into `python3` instead of parsing human text. This is the recommended way for AI agents to pull specific fields or compute custom statistics:
 
 ```bash
@@ -63,6 +65,12 @@ For larger summaries, keep the xwave query bounded and do the aggregation in Pyt
 ```bash
 tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":"case_a"},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"0ns","end":"100us"}},"limits":{"max_rows":1000}}' \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); rows=d.get("data",{}).get("events",[]); print(len(rows))'
+```
+
+For event counts or grouped counts, prefer built-in aggregation over exporting all rows:
+
+```bash
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":"case_a"},"args":{"name":"if0","expr":"valid && ready","time_range":{"begin":"0ns","end":"100us"},"aggregate":{"count":true,"group_by":["qid"],"events":false}}}'
 ```
 
 Request envelope:
@@ -105,7 +113,7 @@ AI usage rules:
 - Use `cursor.set` after finding an important event time, then use `@name`, `@name-20ns`, `@name+5ns`, `@name-10cycle(top.clk)`, or active cursor forms such as `@-10ns` in later time fields.
 - Time fields accept absolute TimeSpec strings directly. Cycle offsets use real FSDB clock edges: `cycle(clk)` means posedge, and `posedge(clk)` / `negedge(clk)` choose the edge explicitly.
 - For range actions, prefer `around/before/after` when investigating context around a cursor, for example `{"around":"@deadlock","before":"100cycle(top.clk)","after":"20cycle(top.clk)"}`.
-- Treat `known:false`, `status:"unknown"`, and `pass:null` as inconclusive waveform facts, not failures.
+- Treat value `known:false`, `status:"unknown"`, and `pass:null` as inconclusive waveform facts, not failures.
 - Use `scope.list` after `SIGNAL_NOT_FOUND`.
 - Use `limits.max_rows/max_events/max_samples` for broad scans.
 - Load APB/AXI/Event configs before protocol or event actions.
@@ -437,6 +445,46 @@ Export matching events. Always set a limit unless you intentionally need a large
 {"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":"case_a"},"args":{"name":"if0","expr":"valid && !ready","time_range":{"begin":"40us","end":"45us"},"limit":100}}
 ```
 
+Use `aggregate` when you need counts instead of full event rows:
+
+```json
+{"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":"case_a"},"args":{"name":"if0","expr":"valid && ready","time_range":{"begin":"0ns","end":"100us"},"aggregate":{"count":true,"group_by":["qid","val"],"events":false}}}
+```
+
+Important: `group_by` names are not magic built-ins. Every group key must already be defined by the event config as either a `signals` alias or a `fields` entry. If `qid` is a standalone FSDB signal, define it under `signals`:
+
+```json
+{
+  "clk": "xring_tb_top.clk",
+  "rst_n": "xring_tb_top.rst_n",
+  "signals": {
+    "valid": "xring_tb_top.credit_init_valid",
+    "ready": "xring_tb_top.credit_init_ready",
+    "qid": "xring_tb_top.credit_init_qid"
+  }
+}
+```
+
+If `qid` is a bit slice inside a payload, define the payload signal and expose `qid` under `fields`:
+
+```json
+{
+  "clk": "xring_tb_top.clk",
+  "rst_n": "xring_tb_top.rst_n",
+  "signals": {
+    "valid": "xring_tb_top.credit_init_valid",
+    "ready": "xring_tb_top.credit_init_ready",
+    "payload": "xring_tb_top.credit_init_payload"
+  },
+  "fields": {
+    "qid": {"signal": "payload", "left": 7, "right": 4},
+    "val": {"signal": "payload", "left": 2, "right": 0}
+  }
+}
+```
+
+After that, `aggregate.group_by:["qid","val"]` groups by those configured values. If a group key is missing, unreadable, or contains x/z, it is grouped as `unknown`.
+
 ## Wave Fact Verification Actions
 
 ### `verify.conditions`
@@ -485,6 +533,14 @@ Sample a numeric signal on clock edges and summarize monotonicity, min, max, and
 
 ```json
 {"api_version":"xwave.ai.v1","action":"signal.trend","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.active_count","clock":"top.clk","sampling":"posedge","time_range":{"begin":"40us","end":"45us"},"max_samples":10000}}
+```
+
+### `signal.statistics`
+
+Count sampled high/low/unknown cycles and numeric min/max/final values over a clocked range. Prefer this over manual `event.export` counting for signal-level statistics.
+
+```json
+{"api_version":"xwave.ai.v1","action":"signal.statistics","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.ready","clock":"top.clk","sampling":"posedge","time_range":{"begin":"@stall-100cycle(top.clk)","end":"@stall+20cycle(top.clk)"},"max_samples":1000000}}
 ```
 
 ### `inspect_signal`
@@ -545,6 +601,8 @@ Use bounded ranges and limits:
 Prefer:
 - `value.batch_at` over repeated `value.at`
 - `event.find` before `event.export`
+- `signal.statistics` before exporting events just to count high/low cycles
+- `event.export` with `aggregate.events:false` before exporting full event rows for counts
 - `axi.channel_stall` before full AXI transaction inspection
 - `signal.stability` before full `signal.changes`
 

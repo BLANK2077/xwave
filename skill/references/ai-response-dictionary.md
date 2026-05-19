@@ -72,11 +72,7 @@ Typical fields:
 
 ```json
 {
-  "text": "8'hff",
-  "bits": "11111111",
-  "hex": "0xff",
-  "unsigned": 255,
-  "signed": -1,
+  "value": "'hff",
   "known": true
 }
 ```
@@ -85,14 +81,14 @@ Unknown values usually contain:
 
 ```json
 {
-  "known": false,
-  "unknown_reason": "contains_x"
+  "value": "'hxx",
+  "known": false
 }
 ```
 
 AI usage:
 - Treat `known:false`, `status:"unknown"`, and `pass:null` as inconclusive, not failed.
-- Do not compare raw display text when `bits`, `hex`, or numeric fields are available.
+- Use request `format` to choose the display string. Do not expect `text`, `bits`, `hex`, `unsigned`, `signed`, or `unknown_reason`.
 
 ### Time Fields
 
@@ -202,7 +198,7 @@ Extraction example:
 
 ```bash
 tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"value.batch_at","target":{"session_id":1},"args":{"time":"10ns","signals":["top.clk","top.rst_n"],"format":"hex"}}' \
-  | python3 -c 'import json,sys; d=json.load(sys.stdin); print([(v.get("signal"), v.get("value",{}).get("hex")) for v in d.get("data",{}).get("values",[])])'
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print([(v.get("signal"), v.get("value",{}).get("value")) for v in d.get("data",{}).get("values",[])])'
 ```
 
 ### List Actions
@@ -242,8 +238,12 @@ Common payloads:
 - `summary.expr`
 - `summary.match_count`
 - `summary.truncated`
+- `summary.event_count`
+- `summary.aggregate_count`
+- `summary.group_count`
 - `data.events`
-- event fields such as `idx`, `time`, `time_ps`, `values`, `context`
+- `data.aggregate`
+- event fields such as `time`, `time_ps`, `signals`, `fields`, `context`
 
 Context payloads, when requested, may include:
 - `context.axi`
@@ -259,6 +259,50 @@ Extraction example:
 tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":1},"args":{"name":"evt0","expr":"valid && !ready","time_range":{"begin":"0ns","end":"100us"}},"limits":{"max_rows":100}}' \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print([e.get("time") for e in d.get("data",{}).get("events",[])])'
 ```
+
+Aggregation example:
+
+```bash
+tools/xwave-env ai query --json '{"api_version":"xwave.ai.v1","action":"event.export","target":{"session_id":1},"args":{"name":"evt0","expr":"valid && ready","time_range":{"begin":"0ns","end":"100us"},"aggregate":{"count":true,"group_by":["qid"],"events":false}}}' \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("data",{}).get("aggregate",{}))'
+```
+
+`aggregate.group_by` can only reference names already present in the event config:
+
+- `signals` aliases, for example `"qid": "xring_tb_top.credit_init_qid"`.
+- `fields` entries sliced from an alias, for example `"qid": {"signal":"payload","left":7,"right":4}`.
+
+Example event config for a standalone `qid` signal:
+
+```json
+{
+  "clk": "xring_tb_top.clk",
+  "signals": {
+    "valid": "xring_tb_top.credit_init_valid",
+    "ready": "xring_tb_top.credit_init_ready",
+    "qid": "xring_tb_top.credit_init_qid"
+  }
+}
+```
+
+Example event config for `qid` and `val` sliced from payload:
+
+```json
+{
+  "clk": "xring_tb_top.clk",
+  "signals": {
+    "valid": "xring_tb_top.credit_init_valid",
+    "ready": "xring_tb_top.credit_init_ready",
+    "payload": "xring_tb_top.credit_init_payload"
+  },
+  "fields": {
+    "qid": {"signal": "payload", "left": 7, "right": 4},
+    "val": {"signal": "payload", "left": 2, "right": 0}
+  }
+}
+```
+
+If a `group_by` key is not configured, unreadable, or contains x/z, its group key becomes `"unknown"`; the aggregate query does not fail just because one grouping value is unknown.
 
 ### Condition And Expression Actions
 
@@ -290,7 +334,7 @@ AI usage:
 Actions:
 
 ```text
-signal.changes/signal.stability/signal.trend/inspect_signal/detect_anomaly
+signal.changes/signal.stability/signal.trend/signal.statistics/inspect_signal/detect_anomaly
 ```
 
 Common payloads:
@@ -303,6 +347,10 @@ Common payloads:
 - `summary.monotonic`
 - `summary.min_value`
 - `summary.max_value`
+- `summary.known_count`
+- `summary.unknown_count`
+- `summary.high_cycles`
+- `summary.low_cycles`
 - `summary.finding_count`
 - `summary.truncated`
 - `data.changes`
@@ -311,6 +359,7 @@ Common payloads:
 AI usage:
 - Use `limits.max_events` or `limits.max_findings` for large windows.
 - Prefer `signal.stability` over `signal.changes` when only stability matters.
+- Prefer `signal.statistics` for high/low cycle counts and numeric min/max over a clocked range.
 
 ### Handshake Actions
 
